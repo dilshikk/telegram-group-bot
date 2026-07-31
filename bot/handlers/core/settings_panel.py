@@ -4,6 +4,7 @@
 """
 from aiogram import F, Router
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -157,6 +158,48 @@ def _groups_list_keyboard(chats: list) -> InlineKeyboardMarkup:
 
 
 # ---------------------------------------------------------------------------
+# Goodbye module — screen 1: main view
+# ---------------------------------------------------------------------------
+
+def _goodbye_main_text(cfg: dict) -> str:
+    enabled = cfg.get("enabled", False)
+    send_pm = cfg.get("send_to_pm", False)
+    return (
+        "👋 <b>Прощание</b>\n"
+        "В этом меню вы можете установить прощальное сообщение, "
+        "которое будет отправлено, когда кто-то покинет группу.\n\n"
+        "⚠️ Сообщение будет отправлено только пользователям, "
+        "которые запустили бота в приватном чате.\n\n"
+        f"Статус: {_on(enabled)}"
+    )
+
+
+def _goodbye_main_keyboard(chat_id: int, cfg: dict) -> InlineKeyboardMarkup:
+    enabled = cfg.get("enabled", False)
+    send_pm = cfg.get("send_to_pm", False)
+
+    if enabled:
+        toggle_row = [
+            _btn("✖ Отключить", f"sp:set:goodbye:enabled:0:{chat_id}"),
+            _btn("✔ Включить",  "sp:noop"),
+        ]
+    else:
+        toggle_row = [
+            _btn("✖ Отключить", "sp:noop"),
+            _btn("✔ Включить",  f"sp:set:goodbye:enabled:1:{chat_id}"),
+        ]
+
+    send_pm_label = f"💌 Отправить в приватный чат {'✓' if send_pm else ''}"
+
+    return InlineKeyboardMarkup(inline_keyboard=[
+        toggle_row,
+        [_btn("✏️ Настроить сообщение", f"sp:gb:configure:{chat_id}")],
+        [_btn(send_pm_label, f"sp:set:goodbye:send_to_pm:{int(not send_pm)}:{chat_id}")],
+        [_btn("◀ Назад", "sp:main:0")],
+    ])
+
+
+# ---------------------------------------------------------------------------
 # Per-module sub-menus
 # ---------------------------------------------------------------------------
 
@@ -256,39 +299,9 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
         )
 
     elif module == "goodbye":
-        # Перенаправляем на FSM-редактор прощания, передавая chat_id
-        enabled = cfg.get("enabled", False)
-        has_text    = bool(cfg.get("text"))
-        has_media   = bool(cfg.get("media_file_id"))
-        has_buttons = bool(cfg.get("buttons"))
-
-        def _s(flag: bool) -> str:
-            return "✅" if flag else "❌"
-
-        text = (
-            "👋 <b>Прощание</b>\n\n"
-            f"📄 Текст: {_s(has_text) if has_text else '❌ Сообщение не установлено.'}\n"
-            f"🖼 Медиа: {_s(has_media) if has_media else '❌ Сообщение не установлено.'}\n"
-            f"🔤 URL-кнопки: {_s(has_buttons) if has_buttons else '❌ Сообщение не установлено.'}\n\n"
-            "👉 Используйте кнопки ниже, чтобы выбрать то, что вы хотите установить"
-        )
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                _btn(f"📄 Текст {_s(has_text)}",    f"sp:gb:set_text:{chat_id}"),
-                _btn("👀 Просмотр",                  f"sp:gb:preview_text:{chat_id}"),
-            ],
-            [
-                _btn(f"🖼 Медиа {_s(has_media)}",   f"sp:gb:set_media:{chat_id}"),
-                _btn("👀 Просмотр",                  f"sp:gb:preview_media:{chat_id}"),
-            ],
-            [
-                _btn(f"🔤 URL-кнопки {_s(has_buttons)}", f"sp:gb:set_buttons:{chat_id}"),
-                _btn("👀 Просмотр",                       f"sp:gb:preview_buttons:{chat_id}"),
-            ],
-            [_btn("👀 Полный предпросмотр",          f"sp:gb:full_preview:{chat_id}")],
-            [_btn("🎨 Выбрать Тему  NEW",            f"sp:gb:theme:{chat_id}")],
-            [_btn("◀ Назад",                         "sp:main:0")],
-        ])
+        # Screen 1: main goodbye menu
+        text = _goodbye_main_text(cfg)
+        kb   = _goodbye_main_keyboard(chat_id, cfg)
 
     elif module == "rules":
         text = (
@@ -663,8 +676,10 @@ async def cmd_settings(message: Message, chat_user_role: str = "member") -> None
 
 
 @router.callback_query(F.data.startswith("sp:select_chat:"))
-async def cb_select_chat(call: CallbackQuery) -> None:
+async def cb_select_chat(call: CallbackQuery, state: FSMContext) -> None:
+    """Выбор группы из списка в личном чате."""
     chat_id = int(call.data.split(":")[2])
+
     async with SessionFactory() as session:
         from bot.database.models import Chat
         from sqlalchemy import select as sa_select
@@ -674,6 +689,9 @@ async def cb_select_chat(call: CallbackQuery) -> None:
     if chat is None:
         await call.answer("Группа не найдена.", show_alert=True)
         return
+
+    # Сохраняем текущий chat_id в FSM data для использования в sp:m:goodbye и sp:gb:*
+    await state.update_data(current_chat_id=chat_id)
 
     await call.message.edit_text(
         _main_text(chat.title or str(chat.id)),
@@ -719,25 +737,20 @@ async def cb_lang(call: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("sp:m:"))
-async def cb_module(call: CallbackQuery, chat_settings: dict | None = None) -> None:
+async def cb_module(call: CallbackQuery, state: FSMContext, chat_settings: dict | None = None) -> None:
     module = call.data.split(":")[2]
 
-    # Определяем chat_id для передачи в FSM-субменю
-    # В группе — берём из call.message.chat.id
-    # В личке — пытаемся извлечь из текста сообщения (название группы → не даст id,
-    # поэтому храним chat_id в callback_data через sp:select_chat)
     if call.message.chat.type == "private":
-        cfg: dict = {}
-        # chat_id для FSM-переходов берём из текущего сообщения через history
-        # В личке chat_id недоступен напрямую, поэтому используем 0 — пользователь
-        # должен был прийти через sp:select_chat, где мы сохраняли chat_id.
-        # Для корректной работы FSM-редактора прощания нужна цепочка sp:m:goodbye
-        # из контекста, где chat_id известен.
-        # Используем временное хранение в тексте message через re.
-        import re
-        # Пробуем найти chat_id из предыдущей кнопки в истории (лучший способ — хранить в data)
-        # Здесь используем 0 как заглушку — FSM-обработчики в goodbye.py сами разберутся
-        inferred_chat_id = 0
+        # Получаем chat_id из FSM state (сохранён при sp:select_chat)
+        data = await state.get_data()
+        inferred_chat_id: int = data.get("current_chat_id", 0)
+        # Загружаем настройки для нужной группы
+        if inferred_chat_id:
+            async with SessionFactory() as session:
+                all_cfg = await get_settings(session, inferred_chat_id)
+            cfg: dict = all_cfg.get(module, {})
+        else:
+            cfg = {}
     else:
         cfg = (chat_settings or {}).get(module, {})
         inferred_chat_id = call.message.chat.id
@@ -766,10 +779,56 @@ async def cb_info(call: CallbackQuery) -> None:
     await call.answer(msg, show_alert=True)
 
 
+@router.callback_query(F.data.startswith("sp:set:goodbye:"))
+async def cb_set_goodbye(call: CallbackQuery, state: FSMContext, chat_settings: dict | None = None) -> None:
+    """
+    Специальный обработчик для goodbye — формат: sp:set:goodbye:<field>:<value>:<chat_id>
+    chat_id передаётся явно в callback_data, чтобы корректно работать в личке.
+    """
+    parts = call.data.split(":")
+    # parts: ["sp", "set", "goodbye", field, value, chat_id]
+    if len(parts) < 6:
+        await call.answer("Ошибка callback data", show_alert=True)
+        return
+
+    field = parts[3]
+    raw   = parts[4]
+    chat_id = int(parts[5])
+
+    value: bool | int | str
+    if raw in ("0", "1"):
+        value = bool(int(raw))
+    elif raw.lstrip("-").isdigit():
+        value = int(raw)
+    else:
+        value = raw
+
+    async with SessionFactory() as session:
+        await update_settings(session, chat_id, "goodbye", {field: value})
+
+    # Перечитываем настройки и рендерим экран 1
+    async with SessionFactory() as session:
+        all_cfg = await get_settings(session, chat_id)
+    cfg = all_cfg.get("goodbye", {})
+    cfg[field] = value
+
+    await call.message.edit_text(
+        _goodbye_main_text(cfg),
+        reply_markup=_goodbye_main_keyboard(chat_id, cfg),
+        parse_mode="HTML",
+    )
+    await call.answer("✅ Сохранено")
+
+
 @router.callback_query(F.data.startswith("sp:set:"))
 async def cb_set(call: CallbackQuery, chat_settings: dict | None = None) -> None:
+    """Generic setter for all modules except goodbye (which has its own handler above)."""
     parts = call.data.split(":")
     module = parts[2]
+    # Skip goodbye — handled by cb_set_goodbye
+    if module == "goodbye":
+        return
+
     field = parts[3]
     raw = parts[4]
 
