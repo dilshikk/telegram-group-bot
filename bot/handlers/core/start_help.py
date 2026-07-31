@@ -7,12 +7,16 @@ from aiogram.types import ChatMemberOwner, ChatMemberAdministrator
 from bot.config import settings
 from bot.handlers.welcome.rules import HELP_CATEGORIES
 from bot.middlewares.chat_context import ChatContextMiddleware
+from bot.services.cache import set_json
 
 router = Router(name="start_help")
 
 CATEGORIES_LIST = ", ".join(HELP_CATEGORIES.keys())
 
 BOT_USERNAME_PLACEHOLDER = "GroupHelpBot"
+
+# TTL для Redis-ключа pm_chat_id — 7 дней
+_PM_CHAT_ID_TTL = 7 * 24 * 3600
 
 # ---------------------------------------------------------------------------
 # Keyboards
@@ -187,12 +191,15 @@ async def _send_start_pm(message: Message) -> None:
 
 async def _forward_settings_to_pm(message: Message) -> bool:
     """
-    Пытается отправить панель настроек в ЛС администратора.
+    Отправляет панель настроек в ЛС администратора.
+    Сохраняет chat_id в Redis (pm_chat_id:{user_id}) чтобы коллбэки в ЛС
+    могли найти current_chat_id без FSM и без зависимости от таблицы chat_users.
     Возвращает True при успехе, False если ЛС недоступен.
     """
     from bot.handlers.core.settings_panel import _main_keyboard, _main_text  # type: ignore[import]
     user_id = message.from_user.id
-    title = message.chat.title or str(message.chat.id)
+    chat_id = message.chat.id
+    title = message.chat.title or str(chat_id)
     try:
         await message.bot.send_message(
             chat_id=user_id,
@@ -200,6 +207,9 @@ async def _forward_settings_to_pm(message: Message) -> bool:
             reply_markup=_main_keyboard(0),
             parse_mode="HTML",
         )
+        # FIX: записываем chat_id в Redis — это единственный надёжный способ
+        # передать контекст в коллбэки ЛС когда нет FSM-сессии
+        await set_json(f"pm_chat_id:{user_id}", chat_id, ex=_PM_CHAT_ID_TTL)
         return True
     except (TelegramForbiddenError, TelegramBadRequest):
         return False
@@ -208,8 +218,7 @@ async def _forward_settings_to_pm(message: Message) -> bool:
 async def _sync_caller_role(message: Message) -> None:
     """
     Явно синхронизирует роль отправителя команды в БД через Telegram API.
-    Вызывается из /reload чтобы не зависеть от middleware (который срабатывает
-    только на обычные сообщения, а не всегда на команды).
+    Вызывается из /reload чтобы не зависеть от middleware.
     """
     user = message.from_user
     chat = message.chat
@@ -226,7 +235,7 @@ async def _sync_caller_role(message: Message) -> None:
     elif isinstance(member, ChatMemberAdministrator):
         role = "admin"
     else:
-        return  # не администратор — нечего синхронизировать
+        return
 
     await ChatContextMiddleware._sync_chat_user(
         chat_id=chat.id,
@@ -247,7 +256,7 @@ async def cmd_start(message: Message) -> None:
         await _send_start_pm(message)
         return
 
-    # В группе — синхронизируем роль и отправляем настройки в ЛС администратора
+    # В группе — синхронизируем роль и отправляем настройки в ЛС
     await _sync_caller_role(message)
 
     bot_me = await message.bot.get_me()
@@ -255,7 +264,7 @@ async def cmd_start(message: Message) -> None:
     sent = await _forward_settings_to_pm(message)
     if sent:
         await message.answer(
-            "📨 Меню настроек отправлено в личный чат ",
+            "📨 Меню настроек отправлено в личный чат",
             parse_mode="HTML",
             reply_markup=_go_to_pm_keyboard(username),
         )
@@ -267,12 +276,12 @@ async def cmd_start(message: Message) -> None:
 
 @router.message(Command("reload"))
 async def cmd_reload(message: Message) -> None:
-    """Принудительно синхронизирует роль вызывающего в БД и обновляет настройки в ЛС."""
+    """Синхронизирует роль вызывающего в БД и обновляет меню в ЛС."""
     if message.chat.type == "private":
         await _send_start_pm(message)
         return
 
-    # FIX: явно синхронизируем роль через Telegram API — не надеемся на middleware
+    # FIX: явно синхронизируем роль + записываем chat_id в Redis
     await _sync_caller_role(message)
 
     bot_me = await message.bot.get_me()
