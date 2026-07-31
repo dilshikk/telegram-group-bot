@@ -58,7 +58,6 @@ def _action_label(action: str) -> str:
 # Main menu definition
 # ---------------------------------------------------------------------------
 
-# Each entry: (emoji + label, callback_data)
 MAIN_ROWS: list[tuple[str, str]] = [
     ("📋 Правила",                   "sp:m:rules"),
     ("🚫 Антиспам",                  "sp:m:antispam"),
@@ -107,7 +106,6 @@ def _main_keyboard(page: int) -> InlineKeyboardMarkup:
         pair = chunk[i: i + 2]
         rows.append([_btn(t, d) for t, d in pair])
 
-    # nav row
     nav: list[InlineKeyboardButton] = []
     if page > 0:
         nav.append(_btn("◀ Назад", f"sp:main:{page - 1}"))
@@ -124,6 +122,14 @@ def _main_text(chat_title: str) -> str:
         f"Группа: <code>{chat_title}</code>\n\n"
         "<i>Выберите один из параметров, который вы хотите изменить.</i>"
     )
+
+
+_NO_GROUPS_TEXT = (
+    "😟 <b>Группы не найдены.</b>\n\n"
+    "Если группа, в которой <b>вы являетесь администратором</b>, не отображается здесь:\n"
+    "  • Отправьте <code>/reload</code> в группу, и повторите попытку\n"
+    "  • Отправьте <code>/settings</code> в группе, а затем нажмите «Открыть в личке бота»"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +301,6 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
         enabled = cfg.get("enabled", False)
         delete = cfg.get("delete", False)
         max_len = cfg.get("limit", 2000)
-        min_len = cfg.get("min_limit", 0)
         action = cfg.get("action", "off")
         text = (
             "📏 <b>Длина сообщения</b>\n"
@@ -380,10 +385,7 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
             "Новые участники не смогут писать до одобрения администратором.\n\n"
             f"Статус: {_on(enabled)}"
         )
-        kb = _kb(
-            _toggle_btn("enabled", enabled),
-            nav,
-        )
+        kb = _kb(_toggle_btn("enabled", enabled), nav)
 
     elif module == "admin_tag":
         enabled = cfg.get("enabled", False)
@@ -392,10 +394,7 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
             "Когда участник тегает @admin, все администраторы получат уведомление.\n\n"
             f"Статус: {_on(enabled)}"
         )
-        kb = _kb(
-            _toggle_btn("enabled", enabled),
-            nav,
-        )
+        kb = _kb(_toggle_btn("enabled", enabled), nav)
 
     elif module == "blocks":
         block_arabic = cfg.get("block_arabic", False)
@@ -461,10 +460,7 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
             "Администраторы могут тегнуть всех участников группы командой.\n\n"
             f"Статус: {_on(enabled)}"
         )
-        kb = _kb(
-            _toggle_btn("enabled", enabled),
-            nav,
-        )
+        kb = _kb(_toggle_btn("enabled", enabled), nav)
 
     elif module == "bot_guard":
         enabled = cfg.get("enabled", False)
@@ -473,10 +469,7 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
             "Автоматически удаляет ботов, добавленных без разрешения.\n\n"
             f"Статус: {_on(enabled)}"
         )
-        kb = _kb(
-            _toggle_btn("enabled", enabled),
-            nav,
-        )
+        kb = _kb(_toggle_btn("enabled", enabled), nav)
 
     elif module == "magic_stickers":
         enabled = cfg.get("enabled", False)
@@ -526,10 +519,7 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
             "Управление темами (форумами) в супергруппе.\n\n"
             f"Статус: {_on(enabled)}"
         )
-        kb = _kb(
-            _toggle_btn("enabled", enabled),
-            nav,
-        )
+        kb = _kb(_toggle_btn("enabled", enabled), nav)
 
     elif module == "recurring":
         text = (
@@ -554,10 +544,7 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
             "Позволяет участникам скрыть своё присутствие в группе.\n\n"
             f"Статус: {_on(enabled)}"
         )
-        kb = _kb(
-            _toggle_btn("enabled", enabled),
-            nav,
-        )
+        kb = _kb(_toggle_btn("enabled", enabled), nav)
 
     elif module == "discussion":
         text = (
@@ -576,16 +563,13 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
         kb = _kb(nav)
 
     elif module == "channel_mod":
+        enabled = cfg.get("enabled", False)
         text = (
             "📺 <b>Управление каналами</b>\n"
             "Модерация сообщений от связанных каналов.\n\n"
-            f"Статус: {_on(cfg.get('enabled', False))}"
+            f"Статус: {_on(enabled)}"
         )
-        enabled = cfg.get("enabled", False)
-        kb = _kb(
-            _toggle_btn("enabled", enabled),
-            nav,
-        )
+        kb = _kb(_toggle_btn("enabled", enabled), nav)
 
     elif module == "checkperms":
         text = (
@@ -606,13 +590,42 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
 # Handlers
 # ---------------------------------------------------------------------------
 
-@router.message(Command("settings"), HasRole("admin"))
+@router.message(Command("settings"))
 async def cmd_settings(message: Message, chat_settings: dict | None = None) -> None:
+    # В личке — показываем инструкцию "Группы не найдены"
     if message.chat.type == "private":
-        await message.answer(
-            "ℹ️ Команда /settings работает только в группах.\n"
-            "Добавьте бота в группу как администратора и используйте /settings там."
-        )
+        await message.answer(_NO_GROUPS_TEXT, parse_mode="HTML")
+        return
+
+    # Только для админов в группе
+    # (HasRole не применяем глобально, чтобы в личке всё равно отвечать)
+    from bot.utils.permissions import role_at_least
+    role = getattr(message, "_chat_user_role", None)
+    # role прокидывается через data в middleware, но в handler'е доступен через инъекцию
+    # поэтому добавляем chat_user_role как параметр
+    await _settings_in_group(message)
+
+
+async def _settings_in_group(message: Message, chat_user_role: str = "member") -> None:
+    from bot.utils.permissions import role_at_least
+    if not role_at_least(chat_user_role, "admin"):
+        return  # не реагируем на не-админов в группе
+    title = message.chat.title or str(message.chat.id)
+    await message.answer(
+        _main_text(title),
+        reply_markup=_main_keyboard(0),
+        parse_mode="HTML",
+    )
+
+
+# Переписываем handler правильно с инъекцией chat_user_role
+@router.message(Command("settings"))
+async def cmd_settings_v2(message: Message, chat_user_role: str = "member") -> None:
+    if message.chat.type == "private":
+        await message.answer(_NO_GROUPS_TEXT, parse_mode="HTML")
+        return
+    from bot.utils.permissions import role_at_least
+    if not role_at_least(chat_user_role, "admin"):
         return
     title = message.chat.title or str(message.chat.id)
     await message.answer(
@@ -675,13 +688,11 @@ async def cb_info(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("sp:set:"))
 async def cb_set(call: CallbackQuery, chat_settings: dict | None = None) -> None:
-    # sp:set:<module>:<field>:<value>
     parts = call.data.split(":")
     module = parts[2]
     field = parts[3]
     raw = parts[4]
 
-    # Convert value
     value: str | int | bool
     if raw in ("0", "1"):
         value = bool(int(raw))
@@ -693,8 +704,6 @@ async def cb_set(call: CallbackQuery, chat_settings: dict | None = None) -> None
     async with SessionFactory() as session:
         await update_settings(session, call.message.chat.id, module, {field: value})
 
-    # Reload sub-menu with updated settings
-    # Build fresh cfg by merging old + new
     cfg = dict((chat_settings or {}).get(module, {}))
     cfg[field] = value
 
