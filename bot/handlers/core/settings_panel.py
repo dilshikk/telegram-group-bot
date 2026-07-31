@@ -15,9 +15,12 @@ from aiogram.types import (
 )
 
 from bot.database.engine import SessionFactory
+from bot.services.cache import get_json, set_json
 from bot.services.settings_service import get_admin_chats, get_settings, update_settings
 
 router = Router(name="settings_panel")
+
+_PM_CHAT_ID_TTL = 7 * 24 * 3600
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -160,7 +163,7 @@ def _groups_list_keyboard(chats: list) -> InlineKeyboardMarkup:
 
 
 # ---------------------------------------------------------------------------
-# FSM chat_id recovery helper
+# FSM + Redis chat_id recovery helper
 # ---------------------------------------------------------------------------
 
 # Sentinel: returned when the caller should immediately return (group selector shown)
@@ -171,26 +174,36 @@ async def _get_pm_chat_id(call: CallbackQuery, state: FSMContext) -> int:
     """
     Возвращает current_chat_id для коллбэков в личном чате.
 
-    Логика (в порядке приоритета):
-    1. FSM data — самый быстрый путь (установлен через /settings или sp:select_chat)
-    2. Авто-восстановление из БД — когда меню открыто через /reload или /settings
-       из группы (bot.send_message не устанавливает FSM).
-       - Если у пользователя ровно 1 группа — подставляем автоматически и сохраняем в FSM
-       - Если несколько — показываем выбор групп (возвращаем _CHAT_ID_SELECTOR_SHOWN)
-    3. Возвращаем 0 — групп нет, caller должен показать ошибку
+    Порядок поиска:
+    1. FSM data (установлен через /settings в ЛС или sp:select_chat)
+    2. Redis ключ pm_chat_id:{user_id} (установлен в _forward_settings_to_pm
+       когда меню открыто через /reload или /start в группе)
+    3. БД — get_admin_chats() — если Redis пустой (первый запуск без /reload)
+       • 1 группа → подставляем автоматически
+       • несколько → показываем список выбора (→ _CHAT_ID_SELECTOR_SHOWN)
+    4. 0 — групп нет совсем
     """
+    # 1. FSM
     data = await state.get_data()
     chat_id: int = data.get("current_chat_id", 0)
     if chat_id:
         return chat_id
 
-    # Авто-восстановление: ищем группы пользователя в БД
+    # 2. Redis — самый надёжный способ: записывается при каждом /reload или /start
+    redis_val = await get_json(f"pm_chat_id:{call.from_user.id}")
+    if redis_val:
+        chat_id = int(redis_val)
+        await state.update_data(current_chat_id=chat_id)
+        return chat_id
+
+    # 3. БД — fallback для случая когда Redis очищен или истёк TTL
     async with SessionFactory() as session:
         chats = await get_admin_chats(session, call.from_user.id)
 
     if len(chats) == 1:
         chat_id = chats[0].id
         await state.update_data(current_chat_id=chat_id)
+        await set_json(f"pm_chat_id:{call.from_user.id}", chat_id, ex=_PM_CHAT_ID_TTL)
         return chat_id
 
     if len(chats) > 1:
@@ -728,6 +741,7 @@ async def cmd_settings(message: Message, state: FSMContext, chat_user_role: str 
         if len(chats) == 1:
             chat = chats[0]
             await state.update_data(current_chat_id=chat.id)
+            await set_json(f"pm_chat_id:{user_id}", chat.id, ex=_PM_CHAT_ID_TTL)
             await message.answer(
                 _main_text(chat.title or str(chat.id)),
                 reply_markup=_main_keyboard(0),
@@ -774,6 +788,7 @@ async def cb_select_chat(call: CallbackQuery, state: FSMContext) -> None:
         return
 
     await state.update_data(current_chat_id=chat_id)
+    await set_json(f"pm_chat_id:{call.from_user.id}", chat_id, ex=_PM_CHAT_ID_TTL)
 
     await call.message.edit_text(
         _main_text(chat.title or str(chat.id)),
@@ -787,7 +802,6 @@ async def cb_select_chat(call: CallbackQuery, state: FSMContext) -> None:
 async def cb_main(call: CallbackQuery, state: FSMContext) -> None:
     page = int(call.data.split(":")[2])
     if call.message.chat.type == "private":
-        # Авто-восстановление chat_id при навигации по страницам
         data = await state.get_data()
         if not data.get("current_chat_id"):
             chat_id = await _get_pm_chat_id(call, state)
@@ -831,7 +845,7 @@ async def cb_module(call: CallbackQuery, state: FSMContext, chat_settings: dict 
     if call.message.chat.type == "private":
         inferred_chat_id = await _get_pm_chat_id(call, state)
         if inferred_chat_id == _CHAT_ID_SELECTOR_SHOWN:
-            return  # уже показали выбор группы
+            return
         if inferred_chat_id == 0:
             await call.answer("😟 Группы не найдены. Отправьте /reload в группе.", show_alert=True)
             return
@@ -869,8 +883,7 @@ async def cb_info(call: CallbackQuery) -> None:
 async def cb_set_goodbye(call: CallbackQuery, state: FSMContext) -> None:
     """
     Setter для модуля goodbye.
-    Формат callback_data: sp:set:goodbye:<field>:<value>:<chat_id>
-    chat_id передаётся явно, чтобы корректно работать из личного чата.
+    Формат: sp:set:goodbye:<field>:<value>:<chat_id>
     """
     parts = call.data.split(":")
     if len(parts) < 6:
@@ -881,7 +894,6 @@ async def cb_set_goodbye(call: CallbackQuery, state: FSMContext) -> None:
     raw     = parts[4]
     chat_id = int(parts[5])
 
-    # Если chat_id=0 — авто-восстановление из FSM/БД
     if chat_id == 0:
         if call.message.chat.type == "private":
             chat_id = await _get_pm_chat_id(call, state)
@@ -919,11 +931,11 @@ async def cb_set_goodbye(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("sp:set:"))
 async def cb_set(call: CallbackQuery, state: FSMContext, chat_settings: dict | None = None) -> None:
-    """Generic setter для всех модулей, кроме goodbye (у него свой обработчик выше)."""
+    """Generic setter для всех модулей, кроме goodbye."""
     parts  = call.data.split(":")
     module = parts[2]
     if module == "goodbye":
-        return  # handled by cb_set_goodbye
+        return
 
     field = parts[3]
     raw   = parts[4]
