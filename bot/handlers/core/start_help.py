@@ -9,17 +9,17 @@ router = Router(name="start_help")
 
 CATEGORIES_LIST = ", ".join(HELP_CATEGORIES.keys())
 
-# Юзернейм бота подставляется динамически (см. main.py → bot.get_me())
-# Для кнопки "Добавить меня в группу" используем deep-link
-BOT_USERNAME_PLACEHOLDER = "GroupHelpBot"  # будет перезаписан в main.py через bot_username
+BOT_USERNAME_PLACEHOLDER = "GroupHelpBot"
 
 
 def _start_keyboard(bot_username: str) -> InlineKeyboardMarkup:
-    """Inline-клавиатура для /start — идентична скриншоту."""
-    add_url = f"https://t.me/{bot_username}?startgroup=start&admin=restrict_members+delete_messages+ban_users+pin_messages+invite_users"
+    """Inline-клавиатура для /start и /reload."""
+    add_url = (
+        f"https://t.me/{bot_username}?startgroup=start"
+        "&admin=restrict_members+delete_messages+ban_users+pin_messages+invite_users"
+    )
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить меня в группу ➕", url=add_url)],
-        [InlineKeyboardButton(text="⚙️ Настройки Группы ✏️", callback_data="start:settings_info")],
         [
             InlineKeyboardButton(text="👥 Группа ↗", url="https://t.me/+0000000000000000"),
             InlineKeyboardButton(text="📢 Канал 🔊↗", url="https://t.me/+0000000000000000"),
@@ -41,16 +41,6 @@ _START_TEXT = (
     "❓ <b>КАКИЕ КОМАНДЫ?</b>\n"
     "Нажмите /help, чтобы увидеть <b>все команды</b> и то, как они работают!\n"
     "📋 <a href='https://t.me/+0000000000000000'>Privacy policy</a>"
-)
-
-_SETTINGS_INFO_TEXT = (
-    "⚙️ <b>Настройки группы</b>\n\n"
-    "Используйте команду /settings в своей группе, чтобы открыть панель управления.\n\n"
-    "Бот должен быть <b>Администратором</b> в группе с правами:\n"
-    "• Ограничивать участников\n"
-    "• Удалять сообщения\n"
-    "• Блокировать участников\n"
-    "• Закреплять сообщения"
 )
 
 _INFO_TEXT = (
@@ -80,13 +70,8 @@ def _back_kb() -> InlineKeyboardMarkup:
     ])
 
 
-# ---------------------------------------------------------------------------
-# Handlers
-# ---------------------------------------------------------------------------
-
-@router.message(Command("start"))
-async def cmd_start(message: Message) -> None:
-    # Получаем username бота
+async def _send_start(message: Message) -> None:
+    """Отправляет стартовое сообщение — используется в /start и /reload."""
     bot_me = await message.bot.get_me()
     username = bot_me.username or BOT_USERNAME_PLACEHOLDER
     await message.answer(
@@ -95,6 +80,21 @@ async def cmd_start(message: Message) -> None:
         reply_markup=_start_keyboard(username),
         disable_web_page_preview=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Handlers
+# ---------------------------------------------------------------------------
+
+@router.message(Command("start"))
+async def cmd_start(message: Message) -> None:
+    await _send_start(message)
+
+
+@router.message(Command("reload"))
+async def cmd_reload(message: Message) -> None:
+    """Повторяет /start — используется для обновления списка групп."""
+    await _send_start(message)
 
 
 @router.callback_query(F.data == "start:back")
@@ -107,12 +107,6 @@ async def cb_start_back(call: CallbackQuery) -> None:
         reply_markup=_start_keyboard(username),
         disable_web_page_preview=True,
     )
-    await call.answer()
-
-
-@router.callback_query(F.data == "start:settings_info")
-async def cb_settings_info(call: CallbackQuery) -> None:
-    await call.message.edit_text(_SETTINGS_INFO_TEXT, parse_mode="HTML", reply_markup=_back_kb())
     await call.answer()
 
 
