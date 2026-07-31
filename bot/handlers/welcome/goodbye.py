@@ -29,6 +29,7 @@ ID последнего сообщения хранится в chat_settings.goo
 """
 from __future__ import annotations
 
+import html
 import re
 from datetime import datetime, timezone
 
@@ -185,7 +186,7 @@ _VARIABLES_TEXT = (
     "• <code>{TIME}</code> = текущее время\n"
     "• <code>{WEEKDAY}</code> = день недели\n"
     "• <code>{MENTION}</code> = ссылка на профиль пользователя\n"
-    "• <code>{USERNAME}</code> = имя пользователя\n"
+    "• <code>{USERNAME}</code> = имя пользователя (@username или пусто)\n"
     "• <code>{GROUPNAME}</code> = имя группы\n"
     "• <code>{RULES}</code> = правила группы"
 )
@@ -261,14 +262,42 @@ def _buttons_to_inline_kb(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMa
     )
 
 
-def _format_text(template: str, member: object | None = None, chat_title: str = "") -> str:
+def _format_text(
+    template: str,
+    member: object | None = None,
+    chat_title: str = "",
+    rules: str = "",
+) -> str:
+    """
+    Подставляет переменные в шаблон прощального сообщения.
+
+    Исправления:
+      - Баг 1: имя/фамилия/username/название группы экранируются через html.escape(),
+               чтобы спецсимволы HTML (<, >, &, ") не ломали разметку.
+      - Баг 2: {RULES} теперь принимает реальный текст правил через аргумент rules.
+      - Баг 3: {USERNAME} при отсутствии username возвращает пустую строку,
+               а не имя пользователя (было неочевидное поведение).
+    """
     now      = datetime.now(timezone.utc)
     weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-    name     = getattr(member, "first_name", "") or ""
-    surname  = getattr(member, "last_name",  "") or ""
-    username = getattr(member, "username",   "") or ""
-    uid      = getattr(member, "id", 0)
-    mention  = f'<a href="tg://user?id={uid}">{name}</a>' if member else name
+
+    # Баг 1: экранируем все строковые данные от пользователя/группы
+    raw_name       = getattr(member, "first_name", "") or ""
+    raw_surname    = getattr(member, "last_name",  "") or ""
+    raw_username   = getattr(member, "username",   "") or ""
+    raw_chat_title = chat_title or ""
+
+    name       = html.escape(raw_name)
+    surname    = html.escape(raw_surname)
+    username   = html.escape(raw_username)
+    group_name = html.escape(raw_chat_title)
+
+    uid     = getattr(member, "id", 0)
+    # {MENTION} использует сырое имя внутри href-тега — экранируем тоже
+    mention = f'<a href="tg://user?id={uid}">{name}</a>' if member else name
+
+    # Баг 3: {USERNAME} → @username если есть, иначе пустая строка
+    username_val = f"@{username}" if username else ""
 
     return (
         template
@@ -277,9 +306,10 @@ def _format_text(template: str, member: object | None = None, chat_title: str = 
         .replace("{SURNAME}",     surname)
         .replace("{NAMESURNAME}", f"{name} {surname}".strip())
         .replace("{MENTION}",     mention)
-        .replace("{USERNAME}",    f"@{username}" if username else name)
-        .replace("{GROUPNAME}",   chat_title)
-        .replace("{RULES}",       "")
+        .replace("{USERNAME}",    username_val)
+        .replace("{GROUPNAME}",   group_name)
+        # Баг 2: подставляем реальные правила (или пустую строку если не переданы)
+        .replace("{RULES}",       html.escape(rules) if rules else "")
         .replace("{DATE}",        now.strftime("%d.%m.%Y"))
         .replace("{TIME}",        now.strftime("%H:%M"))
         .replace("{WEEKDAY}",     weekdays[now.weekday()])
@@ -306,8 +336,11 @@ async def farewell(message: Message, bot: Bot, chat_settings: dict | None = None
     delete_last:  bool         = bool(cfg.get("delete_last", False))
     last_msg_id:  int | None   = cfg.get("last_msg_id")
 
+    # Баг 2: получаем правила из настроек чата для передачи в _format_text
+    rules: str = (chat_settings or {}).get("rules", {}).get("text", "") or ""
+
     reply_markup = _buttons_to_inline_kb(buttons_raw) if buttons_raw else None
-    text         = _format_text(text_tmpl, member, message.chat.title or "") if text_tmpl else None
+    text         = _format_text(text_tmpl, member, message.chat.title or "", rules) if text_tmpl else None
     caption      = text if media_file_id else None
     send_text    = text if not media_file_id else None
 
@@ -616,11 +649,13 @@ async def cb_preview_text(call: CallbackQuery) -> None:
     chat_id = int(call.data.split(":")[3])
     async with SessionFactory() as session:
         cfg = await get_settings(session, chat_id)
-    text = cfg.get("goodbye", {}).get("text", "")
+    full_cfg = cfg
+    text = full_cfg.get("goodbye", {}).get("text", "")
     if not text:
         await call.answer("❌ Текст не установлен.", show_alert=True)
         return
-    preview = _format_text(text, call.from_user, "Ваша группа")
+    rules: str = full_cfg.get("rules", {}).get("text", "") or ""
+    preview = _format_text(text, call.from_user, "Ваша группа", rules)
     await call.answer(preview[:200], show_alert=True)
 
 
@@ -661,7 +696,8 @@ async def cb_full_preview(call: CallbackQuery) -> None:
     media_type    = gb.get("media_type")
     buttons       = gb.get("buttons")
 
-    text         = _format_text(text_tmpl, call.from_user, "Ваша группа") if text_tmpl else None
+    rules: str = cfg.get("rules", {}).get("text", "") or ""
+    text         = _format_text(text_tmpl, call.from_user, "Ваша группа", rules) if text_tmpl else None
     reply_markup = _buttons_to_inline_kb(buttons) if buttons else None
 
     try:
