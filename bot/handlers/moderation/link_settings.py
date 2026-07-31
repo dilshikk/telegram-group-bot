@@ -27,12 +27,12 @@ async def set_link_action(message: Message, command: CommandObject) -> None:
 
 
 @router.message(Command("allowlink"), HasRole("admin"))
-async def whitelist_domain(message: Message, command: CommandObject, chat_settings: dict) -> None:
+async def whitelist_domain(message: Message, command: CommandObject, chat_settings: dict | None = None) -> None:
     if not command.args:
         await message.answer("Использование: /allowlink <домен>")
         return
     domain = command.args.strip().lower()
-    whitelist = set(chat_settings.get("link_settings", {}).get("whitelist", []))
+    whitelist = set((chat_settings or {}).get("link_settings", {}).get("whitelist", []))
     whitelist.add(domain)
     async with SessionFactory() as session:
         await update_settings(session, message.chat.id, "link_settings", {"whitelist": list(whitelist)})
@@ -40,8 +40,8 @@ async def whitelist_domain(message: Message, command: CommandObject, chat_settin
 
 
 @router.message(F.text, ~F.text.startswith("/"))
-async def enforce_links(message: Message, chat_settings: dict, chat_user_role: str = "member") -> None:
-    cfg = chat_settings.get("link_settings", {})
+async def enforce_links(message: Message, chat_settings: dict | None = None, chat_user_role: str = "member") -> None:
+    cfg = (chat_settings or {}).get("link_settings", {})
     if cfg.get("action", "delete") == "off" or chat_user_role in ("admin", "owner", "developer") and cfg.get("allow_admins", True):
         return
     match = URL_RE.search(message.text or "")
