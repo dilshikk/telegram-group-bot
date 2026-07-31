@@ -29,8 +29,8 @@ async def welcome_off(message: Message) -> None:
 
 
 @router.message(F.new_chat_members)
-async def greet_new_members(message: Message, chat_settings: dict) -> None:
-    cfg = chat_settings.get("welcome", {})
+async def greet_new_members(message: Message, chat_settings: dict | None = None) -> None:
+    cfg = (chat_settings or {}).get("welcome", {})
     if not cfg.get("enabled", True):
         return
 
