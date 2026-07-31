@@ -1,10 +1,6 @@
-"""
-Регистрация всех роутеров бота. Каждый модуль из ТЗ — отдельный файл-роутер,
-что соответствует Router/Dispatcher слою из архитектуры (см. README).
-"""
 from aiogram import Dispatcher
 
-from bot.handlers.core import clones, lang_settings, start_help, time_settings
+from bot.handlers.core import clones, lang_settings, settings_panel, start_help, time_settings
 from bot.handlers.moderation import (
     anonymous_admins, antiflood, antispam, anti_nsfw, approve_mode, banned_words,
     blocks, channel_moderation, custom_roles, link_settings, masked_users,
@@ -21,13 +17,14 @@ from bot.handlers.misc import alphabets, crypto_prices
 
 ALL_ROUTERS = [
     # core
+    settings_panel.router,
     start_help.router, clones.router, time_settings.router, lang_settings.router,
     # moderation
-    roles_permissions.router, custom_roles.router, moderation_commands.router,
-    channel_moderation.router, anonymous_admins.router, warns.router,
-    antiflood.router, antispam.router, blocks.router, media_blocks.router,
+    moderation_commands.router, warns.router, antiflood.router, antispam.router,
     anti_nsfw.router, banned_words.router, link_settings.router, approve_mode.router,
     message_deletion.router, night_mode.router, max_message_length.router, masked_users.router,
+    anonymous_admins.router, blocks.router, media_blocks.router, channel_moderation.router,
+    custom_roles.router, roles_permissions.router,
     # welcome
     welcome.router, goodbye.router, rules.router, captcha.router,
     # chat
