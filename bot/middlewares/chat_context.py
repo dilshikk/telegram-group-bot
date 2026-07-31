@@ -3,6 +3,9 @@ Chat Context Middleware.
 Загружает/создаёт Chat + ChatSettings, определяет роль отправителя в чате
 (через Telegram get_chat_member, с кэшем в Redis) и прокидывает всё в handler data.
 Поддерживает анонимных админов (sender_chat) — Support for anonymous admins.
+
+Fix: при первом обнаружении роли owner/admin — сохраняем её в таблицу ChatUser,
+чтобы get_admin_chats() мог найти группы пользователя при /settings из личного чата.
 """
 from __future__ import annotations
 
@@ -10,8 +13,10 @@ from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
 from aiogram.types import ChatMemberAdministrator, ChatMemberOwner, Message, TelegramObject, Update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from bot.database import SessionFactory
+from bot.database.models import ChatUser, User
 from bot.services.cache import get_json, set_json
 from bot.services.settings_service import get_or_create_chat, get_settings
 
@@ -43,12 +48,18 @@ class ChatContextMiddleware(BaseMiddleware):
 
         user = getattr(message, "from_user", None) if message else None
         if user:
-            data["chat_user_role"] = await self._resolve_role(event, chat.id, user.id, data)
+            role = await self._resolve_role(event, chat.id, user.id, data)
+            data["chat_user_role"] = role
+
+            # Синхронизируем роль owner/admin в БД, чтобы get_admin_chats() работал.
+            # member-роль не пишем — таблица chat_users хранит только значимые роли.
+            if role in ("owner", "admin"):
+                await self._sync_chat_user(chat.id, user.id, role)
 
         return await handler(event, data)
 
     @staticmethod
-    async def _resolve_role(event, chat_id: int, user_id: int, data: dict[str, Any]) -> str:
+    async def _resolve_role(event: TelegramObject, chat_id: int, user_id: int, data: dict[str, Any]) -> str:
         cache_key = f"role:{chat_id}:{user_id}"
         cached = await get_json(cache_key)
         if cached is not None:
@@ -70,3 +81,28 @@ class ChatContextMiddleware(BaseMiddleware):
 
         await set_json(cache_key, role, ex=ROLE_CACHE_TTL)
         return role
+
+    @staticmethod
+    async def _sync_chat_user(chat_id: int, user_id: int, role: str) -> None:
+        """
+        Upsert записи в chat_users: если запись отсутствует — создаём,
+        если роль изменилась (например был member, стал admin) — обновляем.
+        Используем PostgreSQL INSERT ... ON CONFLICT DO UPDATE для атомарности.
+        """
+        try:
+            async with SessionFactory() as session:
+                stmt = (
+                    pg_insert(ChatUser)
+                    .values(chat_id=chat_id, user_id=user_id, role=role)
+                    .on_conflict_do_update(
+                        constraint="uq_chat_user",
+                        set_={"role": role},
+                        # Обновляем только если роль реально повысилась или изменилась
+                        where=(ChatUser.role != role),
+                    )
+                )
+                await session.execute(stmt)
+                await session.commit()
+        except Exception:
+            # Не блокируем обработку сообщений при ошибке синхронизации
+            pass
