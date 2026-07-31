@@ -31,10 +31,10 @@ async def block_media(message: Message, command: CommandObject) -> None:
 
 
 @router.message(F.photo | F.video | F.sticker | F.animation | F.voice | F.document)
-async def enforce_media_block(message: Message, chat_settings: dict, chat_user_role: str = "member") -> None:
+async def enforce_media_block(message: Message, chat_settings: dict | None = None, chat_user_role: str = "member") -> None:
     if chat_user_role in ("admin", "owner", "developer"):
         return
-    blocks = chat_settings.get("media_blocks", {})
+    blocks = (chat_settings or {}).get("media_blocks", {})
     for kind, check in MEDIA_MAP.items():
         if blocks.get(kind) and check(message):
             try:
