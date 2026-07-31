@@ -20,6 +20,7 @@ def _start_keyboard(bot_username: str) -> InlineKeyboardMarkup:
     )
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить меня в группу ➕", url=add_url)],
+        [InlineKeyboardButton(text="⚙️ Настройки Группы ✏️", callback_data="start:settings_info")],
         [
             InlineKeyboardButton(text="👥 Группа ↗", url="https://t.me/+0000000000000000"),
             InlineKeyboardButton(text="📢 Канал 🔊↗", url="https://t.me/+0000000000000000"),
@@ -41,6 +42,16 @@ _START_TEXT = (
     "❓ <b>КАКИЕ КОМАНДЫ?</b>\n"
     "Нажмите /help, чтобы увидеть <b>все команды</b> и то, как они работают!\n"
     "📋 <a href='https://t.me/+0000000000000000'>Privacy policy</a>"
+)
+
+_SETTINGS_INFO_TEXT = (
+    "⚙️ <b>Настройки группы</b>\n\n"
+    "Используйте команду /settings в своей группе, чтобы открыть панель управления.\n\n"
+    "Бот должен быть <b>Администратором</b> в группе с правами:\n"
+    "• Ограничивать участников\n"
+    "• Удалять сообщения\n"
+    "• Блокировать участников\n"
+    "• Закреплять сообщения"
 )
 
 _INFO_TEXT = (
@@ -107,6 +118,12 @@ async def cb_start_back(call: CallbackQuery) -> None:
         reply_markup=_start_keyboard(username),
         disable_web_page_preview=True,
     )
+    await call.answer()
+
+
+@router.callback_query(F.data == "start:settings_info")
+async def cb_settings_info(call: CallbackQuery) -> None:
+    await call.message.edit_text(_SETTINGS_INFO_TEXT, parse_mode="HTML", reply_markup=_back_kb())
     await call.answer()
 
 
