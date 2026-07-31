@@ -36,16 +36,17 @@ def bind_bot(bot: Bot) -> None:
 
 
 @router.message(Command("captcha"), HasRole("admin"))
-async def toggle_captcha(message: Message, chat_settings: dict) -> None:
-    new_state = chat_settings.get("captcha", {}).get("mode") != "off"
+async def toggle_captcha(message: Message, chat_settings: dict | None = None) -> None:
+    cfg = chat_settings or {}
+    new_state = cfg.get("captcha", {}).get("mode") != "off"
     async with SessionFactory() as session:
         await update_settings(session, message.chat.id, "captcha", {"mode": "off" if new_state else "math"})
     await message.answer(f"Captcha: {'выключена' if new_state else 'включена (math)'}")
 
 
 @router.message(F.new_chat_members)
-async def start_captcha(message: Message, chat_settings: dict) -> None:
-    cfg = chat_settings.get("captcha", {})
+async def start_captcha(message: Message, chat_settings: dict | None = None) -> None:
+    cfg = (chat_settings or {}).get("captcha", {})
     if cfg.get("mode", "math") == "off":
         return
 
@@ -78,7 +79,7 @@ async def start_captcha(message: Message, chat_settings: dict) -> None:
 
 
 @router.message(F.text.regexp(r"^\d+$"))
-async def check_captcha_answer(message: Message, chat_settings: dict) -> None:
+async def check_captcha_answer(message: Message, chat_settings: dict | None = None) -> None:
     key = f"captcha:{message.chat.id}:{message.from_user.id}"
     data = await get_json(key)
     if data is None:
