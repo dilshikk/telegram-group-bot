@@ -32,8 +32,8 @@ async def set_night_mode(message: Message, command: CommandObject) -> None:
 
 
 @router.message(F.text, ~F.text.startswith("/"))
-async def enforce_night_mode(message: Message, chat_settings: dict, chat_user_role: str = "member") -> None:
-    cfg = chat_settings.get("night_mode", {})
+async def enforce_night_mode(message: Message, chat_settings: dict | None = None, chat_user_role: str = "member") -> None:
+    cfg = (chat_settings or {}).get("night_mode", {})
     if not cfg.get("enabled") or chat_user_role in ("admin", "owner", "developer"):
         return
 
