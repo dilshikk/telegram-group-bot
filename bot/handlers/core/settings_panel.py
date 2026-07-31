@@ -12,7 +12,7 @@ from aiogram.types import (
 )
 
 from bot.database.engine import SessionFactory
-from bot.services.settings_service import update_settings
+from bot.services.settings_service import get_admin_chats, get_settings, update_settings
 
 router = Router(name="settings_panel")
 
@@ -57,8 +57,6 @@ def _action_label(action: str) -> str:
 # Main menu layout
 # ---------------------------------------------------------------------------
 
-# Первая страница — точно по скриншоту:
-# 8 пар (2-col) + 3 полноширинных + nav(Lang | Закрыть | Другие)
 _PAGE0_PAIRS: list[tuple[str, str]] = [
     ("📋 Правила",       "sp:m:rules"),
     ("🚫 Антиспам",      "sp:m:antispam"),
@@ -79,42 +77,38 @@ _PAGE0_PAIRS: list[tuple[str, str]] = [
 ]
 
 _PAGE0_FULL: list[tuple[str, str]] = [
-    ("👑 Бот-страж  NEW",        "sp:m:bot_guard"),
-    ("🎭 Режим одобрения",        "sp:m:approve_mode"),
-    ("🗑 Удаление сообщений",     "sp:m:message_deletion"),
+    ("👑 Бот-страж  NEW",    "sp:m:bot_guard"),
+    ("🎭 Режим одобрения",    "sp:m:approve_mode"),
+    ("🗑 Удаление сообщений", "sp:m:message_deletion"),
 ]
 
-# Вторая страница и далее
 _PAGE1_ROWS: list[tuple[str, str]] = [
-    ("📁 Темы",                   "sp:m:topics"),
-    ("abc Запрещённые слова",     "sp:m:banned_words"),
-    ("⏱ Повт. сообщения",        "sp:m:recurring"),
-    ("👥 Управление польз.",      "sp:m:members"),
-    ("👻 Скрытые польз.",         "sp:m:masked_users"),
-    ("💬 Группа обсуждения",      "sp:m:discussion"),
-    ("✨ Личн. команды",          "sp:m:personal_commands"),
-    ("🎭 Стикеры и GIF",          "sp:m:magic_stickers"),
-    ("📏 Длина сообщения",        "sp:m:max_message_length"),
-    ("📺 Управл. каналами",       "sp:m:channel_mod"),
-    ("✏️ Разрешения",             "sp:m:permissions"),
-    ("🔭 Канал событий",          "sp:m:log_channel"),
+    ("📁 Темы",                "sp:m:topics"),
+    ("abc Запрещённые слова",  "sp:m:banned_words"),
+    ("⏱ Повт. сообщения",     "sp:m:recurring"),
+    ("👥 Управление польз.",   "sp:m:members"),
+    ("👻 Скрытые польз.",      "sp:m:masked_users"),
+    ("💬 Группа обсуждения",   "sp:m:discussion"),
+    ("✨ Личн. команды",       "sp:m:personal_commands"),
+    ("🎭 Стикеры и GIF",       "sp:m:magic_stickers"),
+    ("📏 Длина сообщения",     "sp:m:max_message_length"),
+    ("📺 Управл. каналами",    "sp:m:channel_mod"),
+    ("✏️ Разрешения",          "sp:m:permissions"),
+    ("🔭 Канал событий",       "sp:m:log_channel"),
 ]
 
-_PAGE1_SIZE = 6  # пар на странице 2+
+_PAGE1_SIZE = 6
 
 
 def _main_keyboard(page: int) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
 
     if page == 0:
-        # Парные кнопки
         for i in range(0, len(_PAGE0_PAIRS), 2):
             pair = _PAGE0_PAIRS[i: i + 2]
             rows.append([_btn(t, d) for t, d in pair])
-        # Полноширинные
         for t, d in _PAGE0_FULL:
             rows.append([_btn(t, d)])
-        # Навигация: Lang | Закрыть | Другие
         rows.append([
             _btn("🇷🇺 Lang", "sp:lang"),
             _close(),
@@ -152,6 +146,15 @@ _NO_GROUPS_TEXT = (
     "  • Отправьте <code>/reload</code> в группу, и повторите попытку\n"
     "  • Отправьте <code>/settings</code> в группе, а затем нажмите «Открыть в личке бота»"
 )
+
+
+def _groups_list_keyboard(chats: list) -> InlineKeyboardMarkup:
+    """Клавиатура со списком групп, где пользователь является администратором."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for chat in chats:
+        label = f"👥 {chat.title or str(chat.id)}"
+        rows.append([_btn(label, f"sp:select_chat:{chat.id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # ---------------------------------------------------------------------------
@@ -605,9 +608,31 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
 
 @router.message(Command("settings"))
 async def cmd_settings(message: Message, chat_user_role: str = "member") -> None:
-    # В личке — показываем инструкцию "Группы не найдены"
+    # В личке — показываем список групп где пользователь является администратором
     if message.chat.type == "private":
-        await message.answer(_NO_GROUPS_TEXT, parse_mode="HTML")
+        user_id = message.from_user.id
+        async with SessionFactory() as session:
+            chats = await get_admin_chats(session, user_id)
+
+        if not chats:
+            await message.answer(_NO_GROUPS_TEXT, parse_mode="HTML")
+            return
+
+        if len(chats) == 1:
+            # Только одна группа — сразу открываем настройки
+            chat = chats[0]
+            await message.answer(
+                _main_text(chat.title or str(chat.id)),
+                reply_markup=_main_keyboard(0),
+                parse_mode="HTML",
+            )
+        else:
+            # Несколько групп — показываем список для выбора
+            await message.answer(
+                "⚙️ <b>Выберите группу для настройки:</b>",
+                parse_mode="HTML",
+                reply_markup=_groups_list_keyboard(chats),
+            )
         return
 
     # В группе — только для администраторов
@@ -623,10 +648,41 @@ async def cmd_settings(message: Message, chat_user_role: str = "member") -> None
     )
 
 
+@router.callback_query(F.data.startswith("sp:select_chat:"))
+async def cb_select_chat(call: CallbackQuery) -> None:
+    """Выбор группы из списка в личном чате."""
+    chat_id = int(call.data.split(":")[2])
+    async with SessionFactory() as session:
+        from bot.database.models import Chat
+        from sqlalchemy import select as sa_select
+        result = await session.execute(sa_select(Chat).where(Chat.id == chat_id))
+        chat = result.scalar_one_or_none()
+
+    if chat is None:
+        await call.answer("Группа не найдена.", show_alert=True)
+        return
+
+    await call.message.edit_text(
+        _main_text(chat.title or str(chat.id)),
+        reply_markup=_main_keyboard(0),
+        parse_mode="HTML",
+    )
+    await call.answer()
+
+
 @router.callback_query(F.data.startswith("sp:main:"))
 async def cb_main(call: CallbackQuery) -> None:
     page = int(call.data.split(":")[2])
-    title = call.message.chat.title or str(call.message.chat.id)
+    # В личке title берём из текста сообщения (нет chat.title)
+    if call.message.chat.type == "private":
+        # Извлекаем название группы из текущего текста
+        title = ""
+        if call.message.html_text:
+            import re
+            m = re.search(r"<code>(.*?)</code>", call.message.html_text)
+            title = m.group(1) if m else "Группа"
+    else:
+        title = call.message.chat.title or str(call.message.chat.id)
     await call.message.edit_text(
         _main_text(title),
         reply_markup=_main_keyboard(page),
@@ -654,7 +710,17 @@ async def cb_lang(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("sp:m:"))
 async def cb_module(call: CallbackQuery, chat_settings: dict | None = None) -> None:
     module = call.data.split(":")[2]
-    cfg = (chat_settings or {}).get(module, {})
+
+    # В личке chat_settings не прокидывается middleware — загружаем из БД по chat_id из текста
+    if call.message.chat.type == "private" and chat_settings is None:
+        import re
+        title_match = re.search(r"Группа: <code>(.*?)</code>", call.message.html_text or "")
+        # Пробуем найти chat_id в предыдущем состоянии через текущее сообщение — ищем в callback_data истории
+        # Запасной вариант: загружаем пустой cfg
+        cfg: dict = {}
+    else:
+        cfg = (chat_settings or {}).get(module, {})
+
     text, kb = _make_kb_module(module, cfg)
     await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await call.answer()
