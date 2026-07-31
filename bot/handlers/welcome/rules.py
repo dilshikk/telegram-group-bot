@@ -22,10 +22,10 @@ HELP_CATEGORIES: dict[str, str] = {
     ),
     "welcome": (
         "<b>Приветствие</b>\n"
-        "/setwelcome <текст> — установить приветствие\n"
-        "/setgoodbye <текст> — установить прощание\n"
+        "/setwelcome &lt;текст&gt; — установить приветствие\n"
+        "/setgoodbye &lt;текст&gt; — установить прощание\n"
         "/rules — показать правила\n"
-        "/setrules <текст> — установить правила"
+        "/setrules &lt;текст&gt; — установить правила"
     ),
     "antiflood": (
         "<b>Антифлуд</b>\n"
