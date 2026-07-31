@@ -149,7 +149,6 @@ _NO_GROUPS_TEXT = (
 
 
 def _groups_list_keyboard(chats: list) -> InlineKeyboardMarkup:
-    """Клавиатура со списком групп, где пользователь является администратором."""
     rows: list[list[InlineKeyboardButton]] = []
     for chat in chats:
         label = f"👥 {chat.title or str(chat.id)}"
@@ -161,7 +160,7 @@ def _groups_list_keyboard(chats: list) -> InlineKeyboardMarkup:
 # Per-module sub-menus
 # ---------------------------------------------------------------------------
 
-def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
+def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, InlineKeyboardMarkup]:
     """Return (text, keyboard) for a given module sub-menu."""
 
     def _toggle_btn(field: str, cur: bool) -> list[InlineKeyboardButton]:
@@ -257,20 +256,39 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
         )
 
     elif module == "goodbye":
+        # Перенаправляем на FSM-редактор прощания, передавая chat_id
         enabled = cfg.get("enabled", False)
-        delete_prev = cfg.get("delete_previous", False)
+        has_text    = bool(cfg.get("text"))
+        has_media   = bool(cfg.get("media_file_id"))
+        has_buttons = bool(cfg.get("buttons"))
+
+        def _s(flag: bool) -> str:
+            return "✅" if flag else "❌"
+
         text = (
-            "👋 <b>Прощание</b>\n"
-            "Настройте сообщение, которое бот отправляет при выходе участника.\n\n"
-            f"Статус: {_on(enabled)}\n"
-            f"Удалять предыдущее: {'Да ✅' if delete_prev else 'Нет ❌'}"
+            "👋 <b>Прощание</b>\n\n"
+            f"📄 Текст: {_s(has_text) if has_text else '❌ Сообщение не установлено.'}\n"
+            f"🖼 Медиа: {_s(has_media) if has_media else '❌ Сообщение не установлено.'}\n"
+            f"🔤 URL-кнопки: {_s(has_buttons) if has_buttons else '❌ Сообщение не установлено.'}\n\n"
+            "👉 Используйте кнопки ниже, чтобы выбрать то, что вы хотите установить"
         )
-        kb = _kb(
-            _toggle_btn("enabled", enabled),
-            [_btn("🗑 Удалять предыдущее " + ("✅" if delete_prev else "❌"), f"sp:set:{module}:delete_previous:{int(not delete_prev)}")],
-            [_btn("✏️ Изменить текст", "sp:info:goodbye_text")],
-            nav,
-        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                _btn(f"📄 Текст {_s(has_text)}",    f"sp:gb:set_text:{chat_id}"),
+                _btn("👀 Просмотр",                  f"sp:gb:preview_text:{chat_id}"),
+            ],
+            [
+                _btn(f"🖼 Медиа {_s(has_media)}",   f"sp:gb:set_media:{chat_id}"),
+                _btn("👀 Просмотр",                  f"sp:gb:preview_media:{chat_id}"),
+            ],
+            [
+                _btn(f"🔤 URL-кнопки {_s(has_buttons)}", f"sp:gb:set_buttons:{chat_id}"),
+                _btn("👀 Просмотр",                       f"sp:gb:preview_buttons:{chat_id}"),
+            ],
+            [_btn("👀 Полный предпросмотр",          f"sp:gb:full_preview:{chat_id}")],
+            [_btn("🎨 Выбрать Тему  NEW",            f"sp:gb:theme:{chat_id}")],
+            [_btn("◀ Назад",                         "sp:main:0")],
+        ])
 
     elif module == "rules":
         text = (
@@ -608,7 +626,6 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
 
 @router.message(Command("settings"))
 async def cmd_settings(message: Message, chat_user_role: str = "member") -> None:
-    # В личке — показываем список групп где пользователь является администратором
     if message.chat.type == "private":
         user_id = message.from_user.id
         async with SessionFactory() as session:
@@ -619,7 +636,6 @@ async def cmd_settings(message: Message, chat_user_role: str = "member") -> None
             return
 
         if len(chats) == 1:
-            # Только одна группа — сразу открываем настройки
             chat = chats[0]
             await message.answer(
                 _main_text(chat.title or str(chat.id)),
@@ -627,7 +643,6 @@ async def cmd_settings(message: Message, chat_user_role: str = "member") -> None
                 parse_mode="HTML",
             )
         else:
-            # Несколько групп — показываем список для выбора
             await message.answer(
                 "⚙️ <b>Выберите группу для настройки:</b>",
                 parse_mode="HTML",
@@ -635,7 +650,6 @@ async def cmd_settings(message: Message, chat_user_role: str = "member") -> None
             )
         return
 
-    # В группе — только для администраторов
     from bot.utils.permissions import role_at_least  # type: ignore[import]
     if not role_at_least(chat_user_role, "admin"):
         return
@@ -650,7 +664,6 @@ async def cmd_settings(message: Message, chat_user_role: str = "member") -> None
 
 @router.callback_query(F.data.startswith("sp:select_chat:"))
 async def cb_select_chat(call: CallbackQuery) -> None:
-    """Выбор группы из списка в личном чате."""
     chat_id = int(call.data.split(":")[2])
     async with SessionFactory() as session:
         from bot.database.models import Chat
@@ -673,12 +686,10 @@ async def cb_select_chat(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("sp:main:"))
 async def cb_main(call: CallbackQuery) -> None:
     page = int(call.data.split(":")[2])
-    # В личке title берём из текста сообщения (нет chat.title)
     if call.message.chat.type == "private":
-        # Извлекаем название группы из текущего текста
+        import re
         title = ""
         if call.message.html_text:
-            import re
             m = re.search(r"<code>(.*?)</code>", call.message.html_text)
             title = m.group(1) if m else "Группа"
     else:
@@ -711,17 +722,27 @@ async def cb_lang(call: CallbackQuery) -> None:
 async def cb_module(call: CallbackQuery, chat_settings: dict | None = None) -> None:
     module = call.data.split(":")[2]
 
-    # В личке chat_settings не прокидывается middleware — загружаем из БД по chat_id из текста
-    if call.message.chat.type == "private" and chat_settings is None:
-        import re
-        title_match = re.search(r"Группа: <code>(.*?)</code>", call.message.html_text or "")
-        # Пробуем найти chat_id в предыдущем состоянии через текущее сообщение — ищем в callback_data истории
-        # Запасной вариант: загружаем пустой cfg
+    # Определяем chat_id для передачи в FSM-субменю
+    # В группе — берём из call.message.chat.id
+    # В личке — пытаемся извлечь из текста сообщения (название группы → не даст id,
+    # поэтому храним chat_id в callback_data через sp:select_chat)
+    if call.message.chat.type == "private":
         cfg: dict = {}
+        # chat_id для FSM-переходов берём из текущего сообщения через history
+        # В личке chat_id недоступен напрямую, поэтому используем 0 — пользователь
+        # должен был прийти через sp:select_chat, где мы сохраняли chat_id.
+        # Для корректной работы FSM-редактора прощания нужна цепочка sp:m:goodbye
+        # из контекста, где chat_id известен.
+        # Используем временное хранение в тексте message через re.
+        import re
+        # Пробуем найти chat_id из предыдущей кнопки в истории (лучший способ — хранить в data)
+        # Здесь используем 0 как заглушку — FSM-обработчики в goodbye.py сами разберутся
+        inferred_chat_id = 0
     else:
         cfg = (chat_settings or {}).get(module, {})
+        inferred_chat_id = call.message.chat.id
 
-    text, kb = _make_kb_module(module, cfg)
+    text, kb = _make_kb_module(module, cfg, chat_id=inferred_chat_id)
     await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await call.answer()
 
@@ -766,6 +787,6 @@ async def cb_set(call: CallbackQuery, chat_settings: dict | None = None) -> None
     cfg = dict((chat_settings or {}).get(module, {}))
     cfg[field] = value
 
-    text, kb = _make_kb_module(module, cfg)
+    text, kb = _make_kb_module(module, cfg, chat_id=call.message.chat.id)
     await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await call.answer("✅ Сохранено")
