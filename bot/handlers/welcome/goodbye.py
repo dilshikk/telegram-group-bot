@@ -1,20 +1,26 @@
 """
 Goodbye — сообщение при выходе участника.
 
-FSM-редактор (работает в личном чате с ботом или в группе):
-  sp:m:goodbye → главное меню модуля (текст / медиа / URL-кнопки)
-  sp:gb:set_text:<chat_id>   → ожидаем текст
-  sp:gb:set_media:<chat_id>  → ожидаем медиа
-  sp:gb:set_buttons:<chat_id>→ ожидаем строки кнопок
-  sp:gb:del_buttons:<chat_id>→ удалить URL-кнопки
-  sp:gb:del_message:<chat_id>→ сбросить медиа
-  sp:gb:cancel               → отмена FSM
-  sp:gb:preview:<chat_id>    → предпросмотр одного блока
-  sp:gb:full_preview:<chat_id>→ полный предпросмотр
+Два экрана:
+  Экран 1 (главное меню модуля):  sp:m:goodbye / sp:gb:back_main:<chat_id>
+    – статус включено/выключено
+    – «Настроить сообщение» → экран 2
+    – «Отправить в приватный чат» ↔ переключатель
+    – «Назад» → главное меню настроек
 
-Переменные в тексте:
-  {ID} {NAME} {SURNAME} {NAMESURNAME} {MENTION} {USERNAME}
-  {GROUPNAME} {RULES} {DATE} {TIME} {WEEKDAY} {LANG}
+  Экран 2 (конструктор):  sp:gb:configure:<chat_id>
+    – текст / медиа / URL-кнопки + просмотр каждого
+    – «Полный предпросмотр»
+    – «Выбрать Тему NEW»
+    – «Назад» → возврат на экран 1
+
+FSM-состояния:
+  GoodbyeFSM.waiting_text
+  GoodbyeFSM.waiting_media
+  GoodbyeFSM.waiting_buttons
+
+Переменные: {ID} {NAME} {SURNAME} {NAMESURNAME} {MENTION} {USERNAME}
+            {GROUPNAME} {RULES} {DATE} {TIME} {WEEKDAY} {LANG}
 """
 from __future__ import annotations
 
@@ -50,35 +56,97 @@ class GoodbyeFSM(StatesGroup):
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers — screen 1 (main)
 # ---------------------------------------------------------------------------
 
-def _goodbye_main_keyboard(chat_id: int, cfg: dict) -> InlineKeyboardMarkup:
+def _main_text(cfg: dict) -> str:
+    enabled = cfg.get("enabled", False)
+    status = "✅ Включено" if enabled else "❌ Выключено"
+    return (
+        "👋 <b>Прощание</b>\n"
+        "В этом меню вы можете установить прощальное сообщение, "
+        "которое будет отправлено, когда кто-то покинет группу.\n\n"
+        "⚠️ Сообщение будет отправлено только пользователям, "
+        "которые запустили бота в приватном чате.\n\n"
+        f"Статус: {status}"
+    )
+
+
+def _main_keyboard(chat_id: int, cfg: dict) -> InlineKeyboardMarkup:
+    enabled = cfg.get("enabled", False)
+    send_pm = cfg.get("send_to_pm", False)
+
+    if enabled:
+        toggle_row = [
+            InlineKeyboardButton(text="✖ Отключить", callback_data=f"sp:set:goodbye:enabled:0:{chat_id}"),
+            InlineKeyboardButton(text="✔ Включить",  callback_data="sp:noop"),
+        ]
+    else:
+        toggle_row = [
+            InlineKeyboardButton(text="✖ Отключить", callback_data="sp:noop"),
+            InlineKeyboardButton(text="✔ Включить",  callback_data=f"sp:set:goodbye:enabled:1:{chat_id}"),
+        ]
+
+    pm_mark = " ✓" if send_pm else ""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        toggle_row,
+        [InlineKeyboardButton(text="✏️ Настроить сообщение", callback_data=f"sp:gb:configure:{chat_id}")],
+        [InlineKeyboardButton(text=f"💌 Отправить в приватный чат{pm_mark}",
+                              callback_data=f"sp:set:goodbye:send_to_pm:{int(not send_pm)}:{chat_id}")],
+        [InlineKeyboardButton(text="◀ Назад", callback_data="sp:main:0")],
+    ])
+
+
+# ---------------------------------------------------------------------------
+# Helpers — screen 2 (constructor)
+# ---------------------------------------------------------------------------
+
+def _configure_text(cfg: dict) -> str:
+    def _s(flag: bool) -> str:
+        return "✅" if flag else "❌"
+
+    has_text    = bool(cfg.get("text"))
+    has_media   = bool(cfg.get("media_file_id"))
+    has_buttons = bool(cfg.get("buttons"))
+    return (
+        "👋 <b>Прощание</b>\n\n"
+        f"📄 Текст: {_s(has_text) if has_text else '❌ Сообщение не установлено.'}\n"
+        f"🖼 Медиа: {_s(has_media) if has_media else '❌ Сообщение не установлено.'}\n"
+        f"🔤 URL-кнопки: {_s(has_buttons) if has_buttons else '❌ Сообщение не установлено.'}\n\n"
+        "👉 Используйте кнопки ниже, чтобы выбрать то, что вы хотите установить"
+    )
+
+
+def _configure_keyboard(chat_id: int, cfg: dict) -> InlineKeyboardMarkup:
+    def _s(flag: bool) -> str:
+        return "✅" if flag else "❌"
+
     has_text    = bool(cfg.get("text"))
     has_media   = bool(cfg.get("media_file_id"))
     has_buttons = bool(cfg.get("buttons"))
 
-    def _status(flag: bool) -> str:
-        return "✅" if flag else "❌"
-
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text=f"📄 Текст {_status(has_text)}",    callback_data=f"sp:gb:set_text:{chat_id}"),
+            InlineKeyboardButton(text=f"📄 Текст {_s(has_text)}",         callback_data=f"sp:gb:set_text:{chat_id}"),
             InlineKeyboardButton(text="👀 Просмотр",                       callback_data=f"sp:gb:preview_text:{chat_id}"),
         ],
         [
-            InlineKeyboardButton(text=f"🖼 Медиа {_status(has_media)}",   callback_data=f"sp:gb:set_media:{chat_id}"),
+            InlineKeyboardButton(text=f"🖼 Медиа {_s(has_media)}",        callback_data=f"sp:gb:set_media:{chat_id}"),
             InlineKeyboardButton(text="👀 Просмотр",                       callback_data=f"sp:gb:preview_media:{chat_id}"),
         ],
         [
-            InlineKeyboardButton(text=f"🔤 URL-кнопки {_status(has_buttons)}", callback_data=f"sp:gb:set_buttons:{chat_id}"),
-            InlineKeyboardButton(text="👀 Просмотр",                            callback_data=f"sp:gb:preview_buttons:{chat_id}"),
+            InlineKeyboardButton(text=f"🔤 URL-кнопки {_s(has_buttons)}", callback_data=f"sp:gb:set_buttons:{chat_id}"),
+            InlineKeyboardButton(text="👀 Просмотр",                       callback_data=f"sp:gb:preview_buttons:{chat_id}"),
         ],
-        [InlineKeyboardButton(text="👀 Полный предпросмотр",              callback_data=f"sp:gb:full_preview:{chat_id}")],
-        [InlineKeyboardButton(text="🎨 Выбрать Тему  NEW",                callback_data=f"sp:gb:theme:{chat_id}")],
-        [InlineKeyboardButton(text="◀ Назад",                             callback_data="sp:main:0")],
+        [InlineKeyboardButton(text="👀 Полный предпросмотр",  callback_data=f"sp:gb:full_preview:{chat_id}")],
+        [InlineKeyboardButton(text="🎨 Выбрать Тему  NEW",    callback_data=f"sp:gb:theme:{chat_id}")],
+        [InlineKeyboardButton(text="◀ Назад",                 callback_data=f"sp:gb:back_main:{chat_id}")],
     ])
 
+
+# ---------------------------------------------------------------------------
+# FSM prompts / keyboards
+# ---------------------------------------------------------------------------
 
 _VARIABLES_TEXT = (
     "👉 <b>Отправьте сейчас сообщение, которое хотите установить!</b>\n\n"
@@ -124,8 +192,7 @@ def _cancel_kb() -> InlineKeyboardMarkup:
 
 def _media_cancel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗑 Удалить сообщение", callback_data="sp:gb:del_media_prompt")],
-        [InlineKeyboardButton(text="❌ Отмена",            callback_data="sp:gb:cancel")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="sp:gb:cancel")],
     ])
 
 
@@ -137,8 +204,11 @@ def _buttons_cancel_kb() -> InlineKeyboardMarkup:
     ])
 
 
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
 def _parse_buttons(raw: str) -> list[list[tuple[str, str]]]:
-    """Парсит строки кнопок в формате 'Текст - URL && Текст2 - URL2'"""
     rows: list[list[tuple[str, str]]] = []
     for line in raw.strip().splitlines():
         line = line.strip()
@@ -166,17 +236,18 @@ def _buttons_to_inline_kb(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMa
     )
 
 
-def _format_text(template: str, member: "User | None" = None, chat_title: str = "") -> str:
+def _format_text(template: str, member: object | None = None, chat_title: str = "") -> str:
     now = datetime.now(timezone.utc)
-    weekdays = ["Понедельник","Вторник","Среда","Четверг","Пятница","Суббота","Воскресенье"]
-    name = getattr(member, "first_name", "") or ""
-    surname = getattr(member, "last_name", "") or ""
-    username = getattr(member, "username", "") or ""
-    mention = f'<a href="tg://user?id={getattr(member, "id", 0)}">{name}</a>' if member else name
+    weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+    name     = getattr(member, "first_name", "") or ""
+    surname  = getattr(member, "last_name", "")  or ""
+    username = getattr(member, "username", "")   or ""
+    uid      = getattr(member, "id", 0)
+    mention  = f'<a href="tg://user?id={uid}">{name}</a>' if member else name
 
     return (
         template
-        .replace("{ID}",          str(getattr(member, "id", "")))
+        .replace("{ID}",          str(uid))
         .replace("{NAME}",        name)
         .replace("{SURNAME}",     surname)
         .replace("{NAMESURNAME}", f"{name} {surname}".strip())
@@ -201,41 +272,45 @@ async def farewell(message: Message, chat_settings: dict | None = None) -> None:
     if not cfg.get("enabled"):
         return
 
-    member = message.left_chat_member
-    text_tmpl = cfg.get("text", "")
+    member       = message.left_chat_member
+    text_tmpl    = cfg.get("text", "")
     media_file_id: str | None = cfg.get("media_file_id")
-    media_type: str | None = cfg.get("media_type")  # photo/video/sticker/animation/document
-    buttons_raw: list | None = cfg.get("buttons")
+    media_type:   str | None  = cfg.get("media_type")
+    buttons_raw:  list | None = cfg.get("buttons")
+    send_pm:      bool        = bool(cfg.get("send_to_pm"))
 
     reply_markup = _buttons_to_inline_kb(buttons_raw) if buttons_raw else None
-    text = _format_text(text_tmpl, member, message.chat.title or "") if text_tmpl else None
-    caption = text if media_file_id else None
+    text     = _format_text(text_tmpl, member, message.chat.title or "") if text_tmpl else None
+    caption  = text if media_file_id else None
     send_text = text if not media_file_id else None
 
-    try:
-        if media_file_id and media_type:
-            send = {
-                "photo":     message.answer_photo,
-                "video":     message.answer_video,
-                "sticker":   message.answer_sticker,
-                "animation": message.answer_animation,
-                "document":  message.answer_document,
-            }.get(media_type)
-            if send:
-                if media_type == "sticker":
-                    await send(media_file_id, reply_markup=reply_markup)
-                else:
-                    await send(media_file_id, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
-                return
+    async def _send_farewell(target: object) -> None:
+        """target — объект с методами answer_* / send_* (message или bot)."""
+        try:
+            if media_file_id and media_type:
+                send = {
+                    "photo":     getattr(target, "answer_photo",     None),
+                    "video":     getattr(target, "answer_video",     None),
+                    "sticker":   getattr(target, "answer_sticker",   None),
+                    "animation": getattr(target, "answer_animation", None),
+                    "document":  getattr(target, "answer_document",  None),
+                }.get(media_type)
+                if send:
+                    if media_type == "sticker":
+                        await send(media_file_id, reply_markup=reply_markup)
+                    else:
+                        await send(media_file_id, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
+                    return
+            if send_text:
+                await getattr(target, "answer")(send_text, parse_mode="HTML", reply_markup=reply_markup)
+        except Exception:
+            pass
 
-        if send_text:
-            await message.answer(send_text, parse_mode="HTML", reply_markup=reply_markup)
-    except Exception:
-        pass
+    await _send_farewell(message)
 
 
 # ---------------------------------------------------------------------------
-# /setgoodbye command (legacy, simple text)
+# Legacy command /setgoodbye
 # ---------------------------------------------------------------------------
 
 @router.message(Command("setgoodbye"), HasRole("admin"))
@@ -249,36 +324,52 @@ async def cmd_set_goodbye(message: Message, command: CommandObject) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Settings panel callbacks — открыть меню прощания
+# Screen 2: open configure menu (from «Настроить сообщение» button)
 # ---------------------------------------------------------------------------
 
-@router.callback_query(F.data.startswith("sp:gb:open:"))
-async def cb_goodbye_open(call: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("sp:gb:configure:"))
+async def cb_configure_open(call: CallbackQuery) -> None:
     chat_id = int(call.data.split(":")[3])
     async with SessionFactory() as session:
         cfg = await get_settings(session, chat_id)
-    goodbye_cfg = cfg.get("goodbye", {})
+    gb = cfg.get("goodbye", {})
+
     await call.message.edit_text(
-        "👋 <b>Прощание</b>\n\n"
-        f"📄 Текст: {'✅' if goodbye_cfg.get('text') else '❌ Сообщение не установлено.'}\n"
-        f"🖼 Медиа: {'✅' if goodbye_cfg.get('media_file_id') else '❌ Сообщение не установлено.'}\n"
-        f"🔤 URL-кнопки: {'✅' if goodbye_cfg.get('buttons') else '❌ Сообщение не установлено.'}\n\n"
-        "👉 Используйте кнопки ниже, чтобы выбрать то, что вы хотите установить",
+        _configure_text(gb),
         parse_mode="HTML",
-        reply_markup=_goodbye_main_keyboard(chat_id, goodbye_cfg),
+        reply_markup=_configure_keyboard(chat_id, gb),
     )
     await call.answer()
 
 
 # ---------------------------------------------------------------------------
-# Set text
+# Screen 2 → Screen 1: back button
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("sp:gb:back_main:"))
+async def cb_back_main(call: CallbackQuery) -> None:
+    chat_id = int(call.data.split(":")[3])
+    async with SessionFactory() as session:
+        cfg = await get_settings(session, chat_id)
+    gb = cfg.get("goodbye", {})
+
+    await call.message.edit_text(
+        _main_text(gb),
+        parse_mode="HTML",
+        reply_markup=_main_keyboard(chat_id, gb),
+    )
+    await call.answer()
+
+
+# ---------------------------------------------------------------------------
+# FSM: set text
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data.startswith("sp:gb:set_text:"))
 async def cb_set_text(call: CallbackQuery, state: FSMContext) -> None:
     chat_id = int(call.data.split(":")[3])
     await state.set_state(GoodbyeFSM.waiting_text)
-    await state.update_data(chat_id=chat_id, origin_msg_id=call.message.message_id)
+    await state.update_data(chat_id=chat_id)
     await call.message.edit_text(_VARIABLES_TEXT, parse_mode="HTML", reply_markup=_cancel_kb())
     await call.answer()
 
@@ -295,22 +386,17 @@ async def fsm_receive_text(message: Message, state: FSMContext) -> None:
 
     async with SessionFactory() as session:
         cfg = await get_settings(session, chat_id)
-    goodbye_cfg = cfg.get("goodbye", {})
+    gb = cfg.get("goodbye", {})
 
     await message.answer(
-        "✅ Текст прощания обновлён!\n\n"
-        "👋 <b>Прощание</b>\n\n"
-        f"📄 Текст: {'✅' if goodbye_cfg.get('text') else '❌ Сообщение не установлено.'}\n"
-        f"🖼 Медиа: {'✅' if goodbye_cfg.get('media_file_id') else '❌ Сообщение не установлено.'}\n"
-        f"🔤 URL-кнопки: {'✅' if goodbye_cfg.get('buttons') else '❌ Сообщение не установлено.'}\n\n"
-        "👉 Используйте кнопки ниже, чтобы выбрать то, что вы хотите установить",
+        "✅ Текст прощания обновлён!\n\n" + _configure_text(gb),
         parse_mode="HTML",
-        reply_markup=_goodbye_main_keyboard(chat_id, goodbye_cfg),
+        reply_markup=_configure_keyboard(chat_id, gb),
     )
 
 
 # ---------------------------------------------------------------------------
-# Set media
+# FSM: set media
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data.startswith("sp:gb:set_media:"))
@@ -328,24 +414,19 @@ async def fsm_receive_media(message: Message, state: FSMContext) -> None:
     chat_id: int = data["chat_id"]
     await state.clear()
 
-    file_id: str | None = None
+    file_id:    str | None = None
     media_type: str | None = None
 
     if message.photo:
-        file_id = message.photo[-1].file_id
-        media_type = "photo"
+        file_id, media_type = message.photo[-1].file_id, "photo"
     elif message.video:
-        file_id = message.video.file_id
-        media_type = "video"
+        file_id, media_type = message.video.file_id, "video"
     elif message.sticker:
-        file_id = message.sticker.file_id
-        media_type = "sticker"
+        file_id, media_type = message.sticker.file_id, "sticker"
     elif message.animation:
-        file_id = message.animation.file_id
-        media_type = "animation"
+        file_id, media_type = message.animation.file_id, "animation"
     elif message.document:
-        file_id = message.document.file_id
-        media_type = "document"
+        file_id, media_type = message.document.file_id, "document"
 
     if not file_id:
         await message.answer("❌ Не удалось получить медиафайл. Попробуйте ещё раз.")
@@ -355,29 +436,24 @@ async def fsm_receive_media(message: Message, state: FSMContext) -> None:
     async with SessionFactory() as session:
         await update_settings(session, chat_id, "goodbye", {
             "media_file_id": file_id,
-            "media_type": media_type,
-            "text": caption,
-            "enabled": True,
+            "media_type":    media_type,
+            "text":          caption,
+            "enabled":       True,
         })
 
     async with SessionFactory() as session:
         cfg = await get_settings(session, chat_id)
-    goodbye_cfg = cfg.get("goodbye", {})
+    gb = cfg.get("goodbye", {})
 
     await message.answer(
-        "✅ Медиа прощания обновлено!\n\n"
-        "👋 <b>Прощание</b>\n\n"
-        f"📄 Текст: {'✅' if goodbye_cfg.get('text') else '❌ Сообщение не установлено.'}\n"
-        f"🖼 Медиа: {'✅' if goodbye_cfg.get('media_file_id') else '❌ Сообщение не установлено.'}\n"
-        f"🔤 URL-кнопки: {'✅' if goodbye_cfg.get('buttons') else '❌ Сообщение не установлено.'}\n\n"
-        "👉 Используйте кнопки ниже, чтобы выбрать то, что вы хотите установить",
+        "✅ Медиа прощания обновлено!\n\n" + _configure_text(gb),
         parse_mode="HTML",
-        reply_markup=_goodbye_main_keyboard(chat_id, goodbye_cfg),
+        reply_markup=_configure_keyboard(chat_id, gb),
     )
 
 
 # ---------------------------------------------------------------------------
-# Set buttons
+# FSM: set URL-buttons
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data.startswith("sp:gb:set_buttons:"))
@@ -409,22 +485,17 @@ async def fsm_receive_buttons(message: Message, state: FSMContext) -> None:
 
     async with SessionFactory() as session:
         cfg = await get_settings(session, chat_id)
-    goodbye_cfg = cfg.get("goodbye", {})
+    gb = cfg.get("goodbye", {})
 
     await message.answer(
-        "✅ URL-кнопки обновлены!\n\n"
-        "👋 <b>Прощание</b>\n\n"
-        f"📄 Текст: {'✅' if goodbye_cfg.get('text') else '❌ Сообщение не установлено.'}\n"
-        f"🖼 Медиа: {'✅' if goodbye_cfg.get('media_file_id') else '❌ Сообщение не установлено.'}\n"
-        f"🔤 URL-кнопки: {'✅' if goodbye_cfg.get('buttons') else '❌ Сообщение не установлено.'}\n\n"
-        "👉 Используйте кнопки ниже, чтобы выбрать то, что вы хотите установить",
+        "✅ URL-кнопки обновлены!\n\n" + _configure_text(gb),
         parse_mode="HTML",
-        reply_markup=_goodbye_main_keyboard(chat_id, goodbye_cfg),
+        reply_markup=_configure_keyboard(chat_id, gb),
     )
 
 
 # ---------------------------------------------------------------------------
-# Delete / Cancel / Preview callbacks
+# Cancel FSM
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data == "sp:gb:cancel")
@@ -434,14 +505,36 @@ async def cb_cancel(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
 
 
-@router.callback_query(F.data.startswith("sp:gb:del_buttons_now"))
-async def cb_del_buttons(call: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
-    # Извлечь chat_id из state data или из предыдущего callback — берём из message текста нет,
-    # поэтому просто сообщаем об успехе и просим открыть меню снова
-    await call.answer("✅ URL-кнопки удалены.", show_alert=True)
-    await call.message.edit_text("🗑 URL-кнопки удалены. Откройте меню прощания снова через /settings.", reply_markup=None)
+# ---------------------------------------------------------------------------
+# Delete buttons
+# ---------------------------------------------------------------------------
 
+@router.callback_query(F.data == "sp:gb:del_buttons_now")
+async def cb_del_buttons(call: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    chat_id: int = data.get("chat_id", 0)
+    await state.clear()
+
+    if chat_id:
+        async with SessionFactory() as session:
+            await update_settings(session, chat_id, "goodbye", {"buttons": None})
+        async with SessionFactory() as session:
+            cfg = await get_settings(session, chat_id)
+        gb = cfg.get("goodbye", {})
+        await call.message.edit_text(
+            _configure_text(gb),
+            parse_mode="HTML",
+            reply_markup=_configure_keyboard(chat_id, gb),
+        )
+        await call.answer("✅ URL-кнопки удалены.")
+    else:
+        await call.answer("✅ URL-кнопки удалены.", show_alert=True)
+        await call.message.edit_text("🗑 URL-кнопки удалены.", reply_markup=None)
+
+
+# ---------------------------------------------------------------------------
+# Previews
+# ---------------------------------------------------------------------------
 
 @router.callback_query(F.data.startswith("sp:gb:preview_text:"))
 async def cb_preview_text(call: CallbackQuery) -> None:
@@ -450,9 +543,9 @@ async def cb_preview_text(call: CallbackQuery) -> None:
         cfg = await get_settings(session, chat_id)
     text = cfg.get("goodbye", {}).get("text", "")
     if not text:
-        await call.answer("❌ Сообщение не установлено.", show_alert=True)
+        await call.answer("❌ Текст не установлен.", show_alert=True)
         return
-    preview = _format_text(text, call.from_user, "Группа")
+    preview = _format_text(text, call.from_user, "Ваша группа")
     await call.answer(preview[:200], show_alert=True)
 
 
@@ -488,12 +581,12 @@ async def cb_full_preview(call: CallbackQuery) -> None:
         cfg = await get_settings(session, chat_id)
     gb = cfg.get("goodbye", {})
 
-    text_tmpl = gb.get("text", "")
+    text_tmpl     = gb.get("text", "")
     media_file_id = gb.get("media_file_id")
-    media_type = gb.get("media_type")
-    buttons = gb.get("buttons")
+    media_type    = gb.get("media_type")
+    buttons       = gb.get("buttons")
 
-    text = _format_text(text_tmpl, call.from_user, "Ваша группа") if text_tmpl else None
+    text         = _format_text(text_tmpl, call.from_user, "Ваша группа") if text_tmpl else None
     reply_markup = _buttons_to_inline_kb(buttons) if buttons else None
 
     try:
@@ -518,8 +611,8 @@ async def cb_full_preview(call: CallbackQuery) -> None:
             await call.answer("👀 Предпросмотр отправлен")
         else:
             await call.answer("❌ Прощание не настроено.", show_alert=True)
-    except Exception as e:
-        await call.answer(f"Ошибка предпросмотра: {e}", show_alert=True)
+    except Exception as exc:
+        await call.answer(f"Ошибка предпросмотра: {exc}", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("sp:gb:theme:"))
