@@ -6,20 +6,23 @@ Log channel feature.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from aiogram import Bot
 from aiogram.types import ChatPermissions
 from sqlalchemy import select
 
 from bot.database import SessionFactory
-from bot.database.models import AuditLog, Chat, ChatUser
+from bot.database.models import AuditLog, Chat, ChatUser, GroupStat
 
 MUTED_PERMISSIONS = ChatPermissions(can_send_messages=False)
 UNMUTED_PERMISSIONS = ChatPermissions(
     can_send_messages=True, can_send_audios=True, can_send_documents=True,
     can_send_photos=True, can_send_videos=True, can_send_other_messages=True,
 )
+
+# Действия, считающиеся санкцией для статистики (не отмены)
+_SANCTION_ACTIONS = {"ban", "mute", "kick", "warn"}
 
 
 async def apply_sanction(
@@ -72,6 +75,17 @@ async def apply_sanction(
         elif action in ("unmute", "unban"):
             cu.muted_until = None
             cu.banned_until = None
+
+        # Инкремент sanctions_count в дневной статистике чата
+        if action in _SANCTION_ACTIONS:
+            today = date.today()
+            stat = (await session.execute(
+                select(GroupStat).where(GroupStat.chat_id == chat_id, GroupStat.date == today)
+            )).scalar_one_or_none()
+            if stat is None:
+                stat = GroupStat(chat_id=chat_id, date=today)
+                session.add(stat)
+            stat.sanctions_count += 1
 
         await session.commit()
 
