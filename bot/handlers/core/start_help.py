@@ -26,39 +26,12 @@ async def cmd_help(message: Message, command: CommandObject) -> None:
         "<b>Основные разделы команд</b>\n"
         "/rules — правила чата\n"
         "/ban /mute /kick /warn — модерация (ответом на сообщение)\n"
-        "/settings — информация о настройках чата\n"
+        "/settings — панель настроек чата (только в группах)\n"
         "/commands — полный список команд по категориям\n\n"
         f"Используйте /help &lt;категория&gt; для деталей.\n"
         f"Категории: {CATEGORIES_LIST}",
         parse_mode="HTML",
     )
-
-
-@router.message(Command("settings"))
-async def cmd_settings(message: Message, chat_settings: dict | None = None) -> None:
-    cfg = chat_settings or {}
-    if message.chat.type == "private":
-        await message.answer(
-            "\u2139\ufe0f Команда /settings работает в группах.\n"
-            "Добавьте бота в группу и напишите /settings там."
-        )
-        return
-    # Краткий обзор текущих настроек
-    lines = ["<b>\u2699\ufe0f Текущие настройки чата</b>\n"]
-    checks = [
-        ("antispam", "Антиспам"),
-        ("antiflood", "Антифлуд"),
-        ("anti_nsfw", "Анти-NSFW"),
-        ("approve_mode", "Режим одобрения"),
-        ("night_mode", "Ночной режим"),
-        ("max_message_length", "Макс. длина сообщений"),
-    ]
-    for key, label in checks:
-        enabled = cfg.get(key, {}).get("enabled", False)
-        status = "\u2705" if enabled else "\u274c"
-        lines.append(f"{status} {label}")
-    lines.append("\nДля изменений используйте конкретные команды (/help admin, /help moderation и т.д.)")
-    await message.answer("\n".join(lines), parse_mode="HTML")
 
 
 @router.message(Command("commands"))
