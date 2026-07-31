@@ -12,7 +12,6 @@ from aiogram.types import (
 )
 
 from bot.database.engine import SessionFactory
-from bot.filters.roles import HasRole
 from bot.services.settings_service import update_settings
 
 router = Router(name="settings_panel")
@@ -55,64 +54,87 @@ def _action_label(action: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Main menu definition
+# Main menu layout
 # ---------------------------------------------------------------------------
 
-MAIN_ROWS: list[tuple[str, str]] = [
-    ("📋 Правила",                   "sp:m:rules"),
-    ("🚫 Антиспам",                  "sp:m:antispam"),
-    ("👋 Приветствие",               "sp:m:welcome"),
-    ("💨 Антифлуд",                  "sp:m:antiflood"),
-    ("👋 Прощание",                  "sp:m:goodbye"),
-    ("🔤 Алфавиты",                  "sp:m:alphabets"),
-    ("🧠 Капча",                     "sp:m:captcha"),
-    ("🔍 Проверки",                  "sp:m:checkperms"),
-    ("🚨 @Admin",                    "sp:m:admin_tag"),
-    ("🔒 Блокировки",                "sp:m:blocks"),
-    ("📸 Медиа",                     "sp:m:media_blocks"),
-    ("🔞 Фильтр порно",              "sp:m:anti_nsfw"),
-    ("⚠️ Предупреждения",            "sp:m:warns"),
-    ("🌙 Ночной режим",              "sp:m:night_mode"),
-    ("📝 Упоминание",                "sp:m:tag_all"),
-    ("🔗 Ссылки",                    "sp:m:link_settings"),
-    ("🕵 Бот-страж",                 "sp:m:bot_guard"),
-    ("🚪 Режим одобрения",           "sp:m:approve_mode"),
-    ("🗑 Удаление сообщений",        "sp:m:message_deletion"),
-    ("📁 Темы",                      "sp:m:topics"),
-    ("abc Запрещённые слова",        "sp:m:banned_words"),
-    ("⏱ Повт. сообщения",           "sp:m:recurring"),
-    ("👥 Управление польз.",         "sp:m:members"),
-    ("👻 Скрытые польз.",            "sp:m:masked_users"),
-    ("💬 Группа обсуждения",         "sp:m:discussion"),
-    ("✨ Личн. команды",             "sp:m:personal_commands"),
-    ("🎭 Стикеры и GIF",             "sp:m:magic_stickers"),
-    ("📏 Длина сообщения",           "sp:m:max_message_length"),
-    ("📺 Управл. каналами",          "sp:m:channel_mod"),
-    ("✏️ Разрешения",                "sp:m:permissions"),
-    ("🔭 Канал событий",             "sp:m:log_channel"),
+# Первая страница — точно по скриншоту:
+# 8 пар (2-col) + 3 полноширинных + nav(Lang | Закрыть | Другие)
+_PAGE0_PAIRS: list[tuple[str, str]] = [
+    ("📋 Правила",       "sp:m:rules"),
+    ("🚫 Антиспам",      "sp:m:antispam"),
+    ("💬 Приветствие",   "sp:m:welcome"),
+    ("💨 Антифлуд",      "sp:m:antiflood"),
+    ("👋 Прощание",      "sp:m:goodbye"),
+    ("🔱 Алфавиты",      "sp:m:alphabets"),
+    ("🧠 Капча",         "sp:m:captcha"),
+    ("✅ Проверки",      "sp:m:checkperms"),
+    ("🆘 @Admin",        "sp:m:admin_tag"),
+    ("🔒 Блокировки",    "sp:m:blocks"),
+    ("📸 Медиа",         "sp:m:media_blocks"),
+    ("🔞 Фильтр порно",  "sp:m:anti_nsfw"),
+    ("❗ Предупреждения", "sp:m:warns"),
+    ("🌙 Ночной режим",  "sp:m:night_mode"),
+    ("🔔 Упоминание",    "sp:m:tag_all"),
+    ("🔗 Ссылка группы", "sp:m:link_settings"),
 ]
 
-PAGE_SIZE = 7  # rows per page (2 cols each → 14 buttons + nav)
+_PAGE0_FULL: list[tuple[str, str]] = [
+    ("👑 Бот-страж  NEW",        "sp:m:bot_guard"),
+    ("🎭 Режим одобрения",        "sp:m:approve_mode"),
+    ("🗑 Удаление сообщений",     "sp:m:message_deletion"),
+]
+
+# Вторая страница и далее
+_PAGE1_ROWS: list[tuple[str, str]] = [
+    ("📁 Темы",                   "sp:m:topics"),
+    ("abc Запрещённые слова",     "sp:m:banned_words"),
+    ("⏱ Повт. сообщения",        "sp:m:recurring"),
+    ("👥 Управление польз.",      "sp:m:members"),
+    ("👻 Скрытые польз.",         "sp:m:masked_users"),
+    ("💬 Группа обсуждения",      "sp:m:discussion"),
+    ("✨ Личн. команды",          "sp:m:personal_commands"),
+    ("🎭 Стикеры и GIF",          "sp:m:magic_stickers"),
+    ("📏 Длина сообщения",        "sp:m:max_message_length"),
+    ("📺 Управл. каналами",       "sp:m:channel_mod"),
+    ("✏️ Разрешения",             "sp:m:permissions"),
+    ("🔭 Канал событий",          "sp:m:log_channel"),
+]
+
+_PAGE1_SIZE = 6  # пар на странице 2+
 
 
 def _main_keyboard(page: int) -> InlineKeyboardMarkup:
-    total = len(MAIN_ROWS)
-    pages = (total + PAGE_SIZE * 2 - 1) // (PAGE_SIZE * 2)
-    start = page * PAGE_SIZE * 2
-    chunk = MAIN_ROWS[start: start + PAGE_SIZE * 2]
-
     rows: list[list[InlineKeyboardButton]] = []
-    for i in range(0, len(chunk), 2):
-        pair = chunk[i: i + 2]
-        rows.append([_btn(t, d) for t, d in pair])
 
-    nav: list[InlineKeyboardButton] = []
-    if page > 0:
-        nav.append(_btn("◀ Назад", f"sp:main:{page - 1}"))
-    nav.append(_close())
-    if page < pages - 1:
-        nav.append(_btn("▶ Другие", f"sp:main:{page + 1}"))
-    rows.append(nav)
+    if page == 0:
+        # Парные кнопки
+        for i in range(0, len(_PAGE0_PAIRS), 2):
+            pair = _PAGE0_PAIRS[i: i + 2]
+            rows.append([_btn(t, d) for t, d in pair])
+        # Полноширинные
+        for t, d in _PAGE0_FULL:
+            rows.append([_btn(t, d)])
+        # Навигация: Lang | Закрыть | Другие
+        rows.append([
+            _btn("🇷🇺 Lang", "sp:lang"),
+            _close(),
+            _btn("▶ Другие", "sp:main:1"),
+        ])
+    else:
+        idx = page - 1
+        start = idx * _PAGE1_SIZE * 2
+        chunk = _PAGE1_ROWS[start: start + _PAGE1_SIZE * 2]
+        for i in range(0, len(chunk), 2):
+            pair = chunk[i: i + 2]
+            rows.append([_btn(t, d) for t, d in pair])
+
+        total_pages = 1 + (len(_PAGE1_ROWS) + _PAGE1_SIZE * 2 - 1) // (_PAGE1_SIZE * 2)
+        nav: list[InlineKeyboardButton] = [_btn("◀ Назад", f"sp:main:{page - 1}")]
+        nav.append(_close())
+        if page < total_pages - 1:
+            nav.append(_btn("▶ Другие", f"sp:main:{page + 1}"))
+        rows.append(nav)
+
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -139,13 +161,16 @@ _NO_GROUPS_TEXT = (
 def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
     """Return (text, keyboard) for a given module sub-menu."""
 
-    def _toggle_btn(field: str, cur: bool, label_on: str = "✔ Включить", label_off: str = "✖ Отключить") -> list[InlineKeyboardButton]:
+    def _toggle_btn(field: str, cur: bool) -> list[InlineKeyboardButton]:
         if cur:
-            return [_btn(label_on, f"sp:noop"), _btn(label_off, f"sp:set:{module}:{field}:0")]
-        return [_btn(label_on, f"sp:set:{module}:{field}:1"), _btn(label_off, f"sp:noop")]
+            return [_btn("✔ Включить", "sp:noop"), _btn("✖ Отключить", f"sp:set:{module}:{field}:0")]
+        return [_btn("✔ Включить", f"sp:set:{module}:{field}:1"), _btn("✖ Отключить", "sp:noop")]
 
     def _action_row(cur_action: str, choices: list[str]) -> list[InlineKeyboardButton]:
-        return [_btn(_action_label(a) + (" ✓" if a == cur_action else ""), f"sp:set:{module}:action:{a}") for a in choices]
+        return [
+            _btn(_action_label(a) + (" ✓" if a == cur_action else ""), f"sp:set:{module}:action:{a}")
+            for a in choices
+        ]
 
     nav = [_back(), _close()]
 
@@ -158,11 +183,7 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
             f"Статус: {_on(enabled)}\n"
             f"Наказание: {_action_label(action)}"
         )
-        kb = _kb(
-            _toggle_btn("enabled", enabled),
-            _action_row(action, ["warn", "mute", "kick", "ban"]),
-            nav,
-        )
+        kb = _kb(_toggle_btn("enabled", enabled), _action_row(action, ["warn", "mute", "kick", "ban"]), nav)
 
     elif module == "antiflood":
         enabled = cfg.get("enabled", False)
@@ -177,11 +198,7 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
             f"Кол-во сообщений: {count}\n"
             f"За секунд: {period}"
         )
-        kb = _kb(
-            _toggle_btn("enabled", enabled),
-            _action_row(action, ["warn", "mute", "kick", "ban"]),
-            nav,
-        )
+        kb = _kb(_toggle_btn("enabled", enabled), _action_row(action, ["warn", "mute", "kick", "ban"]), nav)
 
     elif module == "anti_nsfw":
         enabled = cfg.get("enabled", False)
@@ -292,13 +309,9 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
             f"Конец: {end}\n\n"
             "Для изменения времени: /nightmode &lt;HH:MM&gt; &lt;HH:MM&gt;"
         )
-        kb = _kb(
-            _toggle_btn("enabled", enabled),
-            nav,
-        )
+        kb = _kb(_toggle_btn("enabled", enabled), nav)
 
     elif module == "max_message_length":
-        enabled = cfg.get("enabled", False)
         delete = cfg.get("delete", False)
         max_len = cfg.get("limit", 2000)
         action = cfg.get("action", "off")
@@ -312,15 +325,15 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
         )
         kb = _kb(
             [
-                _btn("❌ Выкл" + (" ✓" if action == "off" else ""),      f"sp:set:{module}:action:off"),
+                _btn("❌ Выкл" + (" ✓" if action == "off" else ""),           f"sp:set:{module}:action:off"),
                 _btn("⚠ Предупреждение" + (" ✓" if action == "warn" else ""), f"sp:set:{module}:action:warn"),
-                _btn("⚠ Исключить" + (" ✓" if action == "kick" else ""),  f"sp:set:{module}:action:kick"),
+                _btn("👢 Исключить" + (" ✓" if action == "kick" else ""),     f"sp:set:{module}:action:kick"),
             ],
             [
                 _btn("🚷 Ограничить" + (" ✓" if action == "restrict" else ""), f"sp:set:{module}:action:restrict"),
                 _btn("🚫 Заблокировать" + (" ✓" if action == "ban" else ""),   f"sp:set:{module}:action:ban"),
             ],
-            [_btn("🗑 Удалять сообщения " + ("✅" if delete else "❌"),   f"sp:set:{module}:delete:{int(not delete)}")],
+            [_btn("🗑 Удалять сообщения " + ("✅" if delete else "❌"), f"sp:set:{module}:delete:{int(not delete)}")],
             [_btn("📏 Минимальная длина", "sp:info:min_length")],
             [_btn("📏 Максимальная длина", "sp:info:max_length")],
             nav,
@@ -331,7 +344,7 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
         delete = cfg.get("delete", True)
         action = cfg.get("action", "warn")
         text = (
-            "🔗 <b>Ссылки</b>\n"
+            "🔗 <b>Ссылка группы</b>\n"
             "Блокировка ссылок от обычных пользователей.\n\n"
             f"Статус: {_on(enabled)}\n"
             f"Удаление: {'Да ✅' if delete else 'Нет ❌'}\n"
@@ -381,7 +394,7 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
     elif module == "approve_mode":
         enabled = cfg.get("enabled", False)
         text = (
-            "🚪 <b>Режим одобрения</b>\n"
+            "🎭 <b>Режим одобрения</b>\n"
             "Новые участники не смогут писать до одобрения администратором.\n\n"
             f"Статус: {_on(enabled)}"
         )
@@ -390,7 +403,7 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
     elif module == "admin_tag":
         enabled = cfg.get("enabled", False)
         text = (
-            "🚨 <b>@Admin</b>\n"
+            "🆘 <b>@Admin</b>\n"
             "Когда участник тегает @admin, все администраторы получат уведомление.\n\n"
             f"Статус: {_on(enabled)}"
         )
@@ -440,7 +453,7 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
         allow_en = cfg.get("allow_english", True)
         allow_ru = cfg.get("allow_russian", True)
         text = (
-            "🔤 <b>Алфавиты</b>\n"
+            "🔱 <b>Алфавиты</b>\n"
             "Разрешите или запретите сообщения на определённых языках.\n\n"
             f"Английский: {'✅' if allow_en else '❌'}\n"
             f"Русский: {'✅' if allow_ru else '❌'}"
@@ -456,7 +469,7 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
     elif module == "tag_all":
         enabled = cfg.get("enabled", False)
         text = (
-            "📝 <b>Упоминание всех</b>\n"
+            "🔔 <b>Упоминание всех</b>\n"
             "Администраторы могут тегнуть всех участников группы командой.\n\n"
             f"Статус: {_on(enabled)}"
         )
@@ -465,7 +478,7 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
     elif module == "bot_guard":
         enabled = cfg.get("enabled", False)
         text = (
-            "🕵 <b>Бот-страж</b>\n"
+            "👑 <b>Бот-страж</b>\n"
             "Автоматически удаляет ботов, добавленных без разрешения.\n\n"
             f"Статус: {_on(enabled)}"
         )
@@ -492,10 +505,10 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
             "иметь пользователи и администраторы к некоторым функциям бота."
         )
         kb = _kb(
-            [_btn("🎖 Права на команды",           "sp:info:perm_commands")],
-            [_btn("🤖 Анонимный администратор",    "sp:info:perm_anon")],
-            [_btn("⚙️ Изменение настроек",          "sp:info:perm_settings")],
-            [_btn("🎫 Свои роли",                  "sp:info:perm_roles")],
+            [_btn("🎖 Права на команды",         "sp:info:perm_commands")],
+            [_btn("🤖 Анонимный администратор",  "sp:info:perm_anon")],
+            [_btn("⚙️ Изменение настроек",        "sp:info:perm_settings")],
+            [_btn("🎫 Свои роли",                "sp:info:perm_roles")],
             nav,
         )
 
@@ -573,7 +586,7 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
 
     elif module == "checkperms":
         text = (
-            "🔍 <b>Проверка прав бота</b>\n"
+            "✅ <b>Проверка прав бота</b>\n"
             "Убедитесь, что бот имеет все необходимые права.\n\n"
             "Для проверки используйте: /checkperms"
         )
@@ -591,42 +604,17 @@ def _make_kb_module(module: str, cfg: dict) -> tuple[str, InlineKeyboardMarkup]:
 # ---------------------------------------------------------------------------
 
 @router.message(Command("settings"))
-async def cmd_settings(message: Message, chat_settings: dict | None = None) -> None:
+async def cmd_settings(message: Message, chat_user_role: str = "member") -> None:
     # В личке — показываем инструкцию "Группы не найдены"
     if message.chat.type == "private":
         await message.answer(_NO_GROUPS_TEXT, parse_mode="HTML")
         return
 
-    # Только для админов в группе
-    # (HasRole не применяем глобально, чтобы в личке всё равно отвечать)
-    from bot.utils.permissions import role_at_least
-    role = getattr(message, "_chat_user_role", None)
-    # role прокидывается через data в middleware, но в handler'е доступен через инъекцию
-    # поэтому добавляем chat_user_role как параметр
-    await _settings_in_group(message)
-
-
-async def _settings_in_group(message: Message, chat_user_role: str = "member") -> None:
-    from bot.utils.permissions import role_at_least
-    if not role_at_least(chat_user_role, "admin"):
-        return  # не реагируем на не-админов в группе
-    title = message.chat.title or str(message.chat.id)
-    await message.answer(
-        _main_text(title),
-        reply_markup=_main_keyboard(0),
-        parse_mode="HTML",
-    )
-
-
-# Переписываем handler правильно с инъекцией chat_user_role
-@router.message(Command("settings"))
-async def cmd_settings_v2(message: Message, chat_user_role: str = "member") -> None:
-    if message.chat.type == "private":
-        await message.answer(_NO_GROUPS_TEXT, parse_mode="HTML")
-        return
-    from bot.utils.permissions import role_at_least
+    # В группе — только для администраторов
+    from bot.utils.permissions import role_at_least  # type: ignore[import]
     if not role_at_least(chat_user_role, "admin"):
         return
+
     title = message.chat.title or str(message.chat.id)
     await message.answer(
         _main_text(title),
@@ -656,6 +644,11 @@ async def cb_close(call: CallbackQuery) -> None:
 @router.callback_query(F.data == "sp:noop")
 async def cb_noop(call: CallbackQuery) -> None:
     await call.answer()
+
+
+@router.callback_query(F.data == "sp:lang")
+async def cb_lang(call: CallbackQuery) -> None:
+    await call.answer("🌍 Смена языка пока недоступна.", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("sp:m:"))
