@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.database.models import Chat, ChatSettings
+from bot.database.models import Chat, ChatSettings, ChatUser
 from bot.services.cache import get_json, set_json
 
 CACHE_TTL = 300  # секунд
@@ -69,3 +69,20 @@ async def get_or_create_chat(session: AsyncSession, chat_id: int, title: str = "
         session.add(ChatSettings(chat_id=chat_id, data={}))
         await session.commit()
     return chat
+
+
+async def get_admin_chats(session: AsyncSession, user_id: int) -> list[Chat]:
+    """
+    Возвращает список активных групп, где пользователь является owner или admin.
+    Используется для отображения списка групп в /settings из личного чата.
+    """
+    result = await session.execute(
+        select(Chat)
+        .join(ChatUser, ChatUser.chat_id == Chat.id)
+        .where(
+            ChatUser.user_id == user_id,
+            ChatUser.role.in_(["owner", "admin"]),
+            Chat.is_active == True,
+        )
+    )
+    return list(result.scalars().all())
