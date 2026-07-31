@@ -31,16 +31,18 @@ async def approve_user(message: Message) -> None:
 
 
 @router.message(Command("approvemode"), HasRole("admin"))
-async def toggle_approve_mode(message: Message, chat_settings: dict) -> None:
-    new_state = not chat_settings.get("approve_mode", {}).get("enabled", False)
+async def toggle_approve_mode(message: Message, chat_settings: dict | None = None) -> None:
+    cfg = chat_settings or {}
+    new_state = not cfg.get("approve_mode", {}).get("enabled", False)
     async with SessionFactory() as session:
         await update_settings(session, message.chat.id, "approve_mode", {"enabled": new_state})
     await message.answer(f"Approve mode: {'включён' if new_state else 'выключен'}")
 
 
 @router.message(F.text | F.photo | F.video | F.sticker, ~F.text.startswith("/"))
-async def gate_unapproved(message: Message, chat_settings: dict, chat_user_role: str = "member") -> None:
-    if not chat_settings.get("approve_mode", {}).get("enabled") or chat_user_role in ("admin", "owner", "developer"):
+async def gate_unapproved(message: Message, chat_settings: dict | None = None, chat_user_role: str = "member") -> None:
+    cfg = chat_settings or {}
+    if not cfg.get("approve_mode", {}).get("enabled") or chat_user_role in ("admin", "owner", "developer"):
         return
     async with SessionFactory() as session:
         cu = (await session.execute(
