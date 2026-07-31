@@ -21,8 +21,8 @@ async def set_goodbye(message: Message, command: CommandObject) -> None:
 
 
 @router.message(F.left_chat_member)
-async def farewell(message: Message, chat_settings: dict) -> None:
-    cfg = chat_settings.get("goodbye", {})
+async def farewell(message: Message, chat_settings: dict | None = None) -> None:
+    cfg = (chat_settings or {}).get("goodbye", {})
     if not cfg.get("enabled"):
         return
     member = message.left_chat_member
