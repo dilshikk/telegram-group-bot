@@ -44,7 +44,7 @@ async def list_words(message: Message) -> None:
 
 
 @router.message(F.text, ~F.text.startswith("/"))
-async def filter_banned_words(message: Message, chat_settings: dict, chat_user_role: str = "member") -> None:
+async def filter_banned_words(message: Message, chat_settings: dict | None = None, chat_user_role: str = "member") -> None:
     if chat_user_role in ("admin", "owner", "developer"):
         return
     async with SessionFactory() as session:
@@ -53,7 +53,7 @@ async def filter_banned_words(message: Message, chat_settings: dict, chat_user_r
         return
     text_lower = (message.text or "").lower()
     if any(w in text_lower for w in words):
-        action = chat_settings.get("banned_words", {}).get("action", "delete")
+        action = (chat_settings or {}).get("banned_words", {}).get("action", "delete")
         try:
             await message.delete()
         except Exception:
