@@ -670,7 +670,7 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
 # ---------------------------------------------------------------------------
 
 @router.message(Command("settings"))
-async def cmd_settings(message: Message, chat_user_role: str = "member") -> None:
+async def cmd_settings(message: Message, state: FSMContext, chat_user_role: str = "member") -> None:
     if message.chat.type == "private":
         user_id = message.from_user.id
         async with SessionFactory() as session:
@@ -682,6 +682,9 @@ async def cmd_settings(message: Message, chat_user_role: str = "member") -> None
 
         if len(chats) == 1:
             chat = chats[0]
+            # FIX: сохраняем chat_id в FSM — без этого все настройки из личного чата
+            # летят в chat_id=0 и никогда не сохраняются в правильную запись БД
+            await state.update_data(current_chat_id=chat.id)
             await message.answer(
                 _main_text(chat.title or str(chat.id)),
                 reply_markup=_main_keyboard(0),
@@ -700,6 +703,8 @@ async def cmd_settings(message: Message, chat_user_role: str = "member") -> None
         return
 
     title = message.chat.title or str(message.chat.id)
+    # FIX: в групповом чате тоже сохраняем current_chat_id — для единообразия
+    await state.update_data(current_chat_id=message.chat.id)
     await message.answer(
         _main_text(title),
         reply_markup=_main_keyboard(0),
@@ -783,7 +788,12 @@ async def cb_module(call: CallbackQuery, state: FSMContext, chat_settings: dict 
                 all_cfg = await get_settings(session, inferred_chat_id)
             cfg: dict = all_cfg.get(module, {})
         else:
-            cfg = {}
+            # FIX: нет chat_id — сообщаем пользователю вместо молчаливого отказа
+            await call.answer(
+                "❌ Сессия истекла. Отправьте /settings заново.",
+                show_alert=True,
+            )
+            return
     else:
         cfg = (chat_settings or {}).get(module, {})
         inferred_chat_id = call.message.chat.id
@@ -812,7 +822,7 @@ async def cb_info(call: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("sp:set:goodbye:"))
-async def cb_set_goodbye(call: CallbackQuery) -> None:
+async def cb_set_goodbye(call: CallbackQuery, state: FSMContext) -> None:
     """
     Setter для модуля goodbye.
     Формат callback_data: sp:set:goodbye:<field>:<value>:<chat_id>
@@ -827,6 +837,18 @@ async def cb_set_goodbye(call: CallbackQuery) -> None:
     field   = parts[3]
     raw     = parts[4]
     chat_id = int(parts[5])
+
+    # FIX: защита от chat_id=0 — значит кнопка была сформирована без FSM-данных
+    if chat_id == 0:
+        # Попробуем достать chat_id из FSM как fallback
+        data = await state.get_data()
+        chat_id = data.get("current_chat_id", 0)
+    if chat_id == 0:
+        await call.answer(
+            "❌ Не удалось определить группу. Отправьте /settings заново.",
+            show_alert=True,
+        )
+        return
 
     value: bool | int | str
     if raw in ("0", "1"):
@@ -852,7 +874,7 @@ async def cb_set_goodbye(call: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("sp:set:"))
-async def cb_set(call: CallbackQuery, chat_settings: dict | None = None) -> None:
+async def cb_set(call: CallbackQuery, state: FSMContext, chat_settings: dict | None = None) -> None:
     """Generic setter для всех модулей, кроме goodbye (у него свой обработчик выше)."""
     parts  = call.data.split(":")
     module = parts[2]
@@ -870,12 +892,25 @@ async def cb_set(call: CallbackQuery, chat_settings: dict | None = None) -> None
     else:
         value = raw
 
+    # FIX: в личном чате берём chat_id из FSM, а не из call.message.chat.id (который = user_id в ЛС)
+    if call.message.chat.type == "private":
+        data = await state.get_data()
+        chat_id: int = data.get("current_chat_id", 0)
+        if chat_id == 0:
+            await call.answer(
+                "❌ Не удалось определить группу. Отправьте /settings заново.",
+                show_alert=True,
+            )
+            return
+    else:
+        chat_id = call.message.chat.id
+
     async with SessionFactory() as session:
-        await update_settings(session, call.message.chat.id, module, {field: value})
+        await update_settings(session, chat_id, module, {field: value})
 
     cfg = dict((chat_settings or {}).get(module, {}))
     cfg[field] = value
 
-    text, kb = _make_kb_module(module, cfg, chat_id=call.message.chat.id)
+    text, kb = _make_kb_module(module, cfg, chat_id=chat_id)
     await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await call.answer("✅ Сохранено")
