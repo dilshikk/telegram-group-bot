@@ -35,8 +35,9 @@ async def unblock_toggle(message: Message, command: CommandObject) -> None:
 
 
 @router.message(F.forward_date | F.forward_from | F.forward_from_chat)
-async def enforce_forward_block(message: Message, chat_settings: dict, chat_user_role: str = "member") -> None:
-    if chat_settings.get("blocks", {}).get("forwards") and chat_user_role not in ("admin", "owner", "developer"):
+async def enforce_forward_block(message: Message, chat_settings: dict | None = None, chat_user_role: str = "member") -> None:
+    cfg = chat_settings or {}
+    if cfg.get("blocks", {}).get("forwards") and chat_user_role not in ("admin", "owner", "developer"):
         try:
             await message.delete()
         except Exception:
@@ -44,8 +45,9 @@ async def enforce_forward_block(message: Message, chat_settings: dict, chat_user
 
 
 @router.message(F.new_chat_members)
-async def enforce_bot_block(message: Message, chat_settings: dict) -> None:
-    if not chat_settings.get("blocks", {}).get("bots"):
+async def enforce_bot_block(message: Message, chat_settings: dict | None = None) -> None:
+    cfg = chat_settings or {}
+    if not cfg.get("blocks", {}).get("bots"):
         return
     for member in message.new_chat_members:
         if member.is_bot:
