@@ -6,6 +6,7 @@ Goodbye — сообщение при выходе участника.
     – статус включено/выключено
     – «Настроить сообщение» → экран 2
     – «Отправить в приватный чат» ↔ переключатель
+    – «Удалять последнее сообщение» ↔ переключатель
     – «Назад» → главное меню настроек
 
   Экран 2 (конструктор):  sp:gb:configure:<chat_id>
@@ -14,10 +15,14 @@ Goodbye — сообщение при выходе участника.
     – «Выбрать Тему NEW»
     – «Назад» → возврат на экран 1
 
-FSM-состояния:
-  GoodbyeFSM.waiting_text
-  GoodbyeFSM.waiting_media
-  GoodbyeFSM.waiting_buttons
+Логика отправки:
+  send_to_pm=False (по умолчанию) → прощание публикуется в группу
+  send_to_pm=True                 → прощание отправляется в ЛС ушедшему участнику
+                                    (только если он ранее запустил бота)
+  delete_last=True                → предыдущее прощальное сообщение в группе удаляется
+                                    перед отправкой нового (только при send_to_pm=False)
+
+ID последнего сообщения хранится в chat_settings.goodbye.last_msg_id.
 
 Переменные: {ID} {NAME} {SURNAME} {NAMESURNAME} {MENTION} {USERNAME}
             {GROUPNAME} {RULES} {DATE} {TIME} {WEEKDAY} {LANG}
@@ -27,7 +32,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -60,21 +65,30 @@ class GoodbyeFSM(StatesGroup):
 # ---------------------------------------------------------------------------
 
 def _main_text(cfg: dict) -> str:
-    enabled = cfg.get("enabled", False)
-    status = "✅ Включено" if enabled else "❌ Выключено"
+    enabled  = cfg.get("enabled", False)
+    status   = "✅ Включено" if enabled else "❌ Выключено"
+    send_pm  = cfg.get("send_to_pm", False)
+    del_last = cfg.get("delete_last", False)
+
+    pm_note = (
+        "\n⚠️ Сообщение будет отправлено только пользователям, "
+        "которые запустили бота в приватном чате."
+        if send_pm else
+        "\nСообщение отправляется в группу."
+    )
     return (
         "👋 <b>Прощание</b>\n"
         "В этом меню вы можете установить прощальное сообщение, "
-        "которое будет отправлено, когда кто-то покинет группу.\n\n"
-        "⚠️ Сообщение будет отправлено только пользователям, "
-        "которые запустили бота в приватном чате.\n\n"
+        "которое будет отправлено, когда кто-то покинет группу."
+        f"{pm_note}\n\n"
         f"Статус: {status}"
     )
 
 
 def _main_keyboard(chat_id: int, cfg: dict) -> InlineKeyboardMarkup:
-    enabled = cfg.get("enabled", False)
-    send_pm = cfg.get("send_to_pm", False)
+    enabled  = cfg.get("enabled", False)
+    send_pm  = cfg.get("send_to_pm", False)
+    del_last = cfg.get("delete_last", False)
 
     if enabled:
         toggle_row = [
@@ -87,12 +101,23 @@ def _main_keyboard(chat_id: int, cfg: dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="✔ Включить",  callback_data=f"sp:set:goodbye:enabled:1:{chat_id}"),
         ]
 
-    pm_mark = " ✓" if send_pm else ""
+    pm_mark  = " ✓" if send_pm  else ""
+    del_mark = " ✓" if del_last else ""
+
     return InlineKeyboardMarkup(inline_keyboard=[
         toggle_row,
-        [InlineKeyboardButton(text="✏️ Настроить сообщение", callback_data=f"sp:gb:configure:{chat_id}")],
-        [InlineKeyboardButton(text=f"💌 Отправить в приватный чат{pm_mark}",
-                              callback_data=f"sp:set:goodbye:send_to_pm:{int(not send_pm)}:{chat_id}")],
+        [InlineKeyboardButton(
+            text="✏️ Настроить сообщение",
+            callback_data=f"sp:gb:configure:{chat_id}",
+        )],
+        [InlineKeyboardButton(
+            text=f"💌 Отправить в приватный чат{pm_mark}",
+            callback_data=f"sp:set:goodbye:send_to_pm:{int(not send_pm)}:{chat_id}",
+        )],
+        [InlineKeyboardButton(
+            text=f"🗑 Удалять последнее сообщение{del_mark}",
+            callback_data=f"sp:set:goodbye:delete_last:{int(not del_last)}:{chat_id}",
+        )],
         [InlineKeyboardButton(text="◀ Назад", callback_data="sp:main:0")],
     ])
 
@@ -237,11 +262,11 @@ def _buttons_to_inline_kb(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMa
 
 
 def _format_text(template: str, member: object | None = None, chat_title: str = "") -> str:
-    now = datetime.now(timezone.utc)
+    now      = datetime.now(timezone.utc)
     weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
     name     = getattr(member, "first_name", "") or ""
-    surname  = getattr(member, "last_name", "")  or ""
-    username = getattr(member, "username", "")   or ""
+    surname  = getattr(member, "last_name",  "") or ""
+    username = getattr(member, "username",   "") or ""
     uid      = getattr(member, "id", 0)
     mention  = f'<a href="tg://user?id={uid}">{name}</a>' if member else name
 
@@ -267,46 +292,96 @@ def _format_text(template: str, member: object | None = None, chat_title: str = 
 # ---------------------------------------------------------------------------
 
 @router.message(F.left_chat_member)
-async def farewell(message: Message, chat_settings: dict | None = None) -> None:
+async def farewell(message: Message, bot: Bot, chat_settings: dict | None = None) -> None:
     cfg = (chat_settings or {}).get("goodbye", {})
     if not cfg.get("enabled"):
         return
 
-    member       = message.left_chat_member
-    text_tmpl    = cfg.get("text", "")
-    media_file_id: str | None = cfg.get("media_file_id")
-    media_type:   str | None  = cfg.get("media_type")
-    buttons_raw:  list | None = cfg.get("buttons")
-    send_pm:      bool        = bool(cfg.get("send_to_pm"))
+    member        = message.left_chat_member
+    text_tmpl     = cfg.get("text", "")
+    media_file_id: str | None  = cfg.get("media_file_id")
+    media_type:   str | None   = cfg.get("media_type")   # photo/video/sticker/animation/document
+    buttons_raw:  list | None  = cfg.get("buttons")
+    send_pm:      bool         = bool(cfg.get("send_to_pm", False))
+    delete_last:  bool         = bool(cfg.get("delete_last", False))
+    last_msg_id:  int | None   = cfg.get("last_msg_id")
 
     reply_markup = _buttons_to_inline_kb(buttons_raw) if buttons_raw else None
-    text     = _format_text(text_tmpl, member, message.chat.title or "") if text_tmpl else None
-    caption  = text if media_file_id else None
-    send_text = text if not media_file_id else None
+    text         = _format_text(text_tmpl, member, message.chat.title or "") if text_tmpl else None
+    caption      = text if media_file_id else None
+    send_text    = text if not media_file_id else None
 
-    async def _send_farewell(target: object) -> None:
-        """target — объект с методами answer_* / send_* (message или bot)."""
+    # ------------------------------------------------------------------
+    # Если включена опция «Отправить в приватный чат» — пишем в ЛС
+    # ------------------------------------------------------------------
+    if send_pm:
+        user_id = getattr(member, "id", None)
+        if not user_id:
+            return
         try:
             if media_file_id and media_type:
-                send = {
-                    "photo":     getattr(target, "answer_photo",     None),
-                    "video":     getattr(target, "answer_video",     None),
-                    "sticker":   getattr(target, "answer_sticker",   None),
-                    "animation": getattr(target, "answer_animation", None),
-                    "document":  getattr(target, "answer_document",  None),
+                send_fn = {
+                    "photo":     bot.send_photo,
+                    "video":     bot.send_video,
+                    "sticker":   bot.send_sticker,
+                    "animation": bot.send_animation,
+                    "document":  bot.send_document,
                 }.get(media_type)
-                if send:
+                if send_fn:
                     if media_type == "sticker":
-                        await send(media_file_id, reply_markup=reply_markup)
+                        await send_fn(user_id, media_file_id, reply_markup=reply_markup)
                     else:
-                        await send(media_file_id, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
+                        await send_fn(user_id, media_file_id, caption=caption,
+                                      parse_mode="HTML", reply_markup=reply_markup)
                     return
             if send_text:
-                await getattr(target, "answer")(send_text, parse_mode="HTML", reply_markup=reply_markup)
+                await bot.send_message(user_id, send_text, parse_mode="HTML", reply_markup=reply_markup)
+        except Exception:
+            # Пользователь не запускал бота — молча пропускаем
+            pass
+        return
+
+    # ------------------------------------------------------------------
+    # Отправка в группу
+    # ------------------------------------------------------------------
+
+    # Удаляем предыдущее прощальное сообщение, если включена опция
+    if delete_last and last_msg_id:
+        try:
+            await bot.delete_message(message.chat.id, last_msg_id)
         except Exception:
             pass
 
-    await _send_farewell(message)
+    sent_msg_id: int | None = None
+    try:
+        if media_file_id and media_type:
+            send_fn = {
+                "photo":     message.answer_photo,
+                "video":     message.answer_video,
+                "sticker":   message.answer_sticker,
+                "animation": message.answer_animation,
+                "document":  message.answer_document,
+            }.get(media_type)
+            if send_fn:
+                if media_type == "sticker":
+                    sent = await send_fn(media_file_id, reply_markup=reply_markup)
+                else:
+                    sent = await send_fn(media_file_id, caption=caption,
+                                         parse_mode="HTML", reply_markup=reply_markup)
+                sent_msg_id = sent.message_id
+        elif send_text:
+            sent = await message.answer(send_text, parse_mode="HTML", reply_markup=reply_markup)
+            sent_msg_id = sent.message_id
+    except Exception:
+        pass
+
+    # Сохраняем ID отправленного сообщения для последующего удаления
+    if delete_last and sent_msg_id:
+        try:
+            async with SessionFactory() as session:
+                await update_settings(session, message.chat.id, "goodbye", {"last_msg_id": sent_msg_id})
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +399,7 @@ async def cmd_set_goodbye(message: Message, command: CommandObject) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Screen 2: open configure menu (from «Настроить сообщение» button)
+# Screen 2: open configure menu
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data.startswith("sp:gb:configure:"))
@@ -506,12 +581,12 @@ async def cb_cancel(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Delete buttons
+# Delete URL-buttons
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data == "sp:gb:del_buttons_now")
 async def cb_del_buttons(call: CallbackQuery, state: FSMContext) -> None:
-    data = await state.get_data()
+    data    = await state.get_data()
     chat_id: int = data.get("chat_id", 0)
     await state.clear()
 
@@ -591,18 +666,19 @@ async def cb_full_preview(call: CallbackQuery) -> None:
 
     try:
         if media_file_id and media_type:
-            send = {
+            send_fn = {
                 "photo":     call.message.answer_photo,
                 "video":     call.message.answer_video,
                 "sticker":   call.message.answer_sticker,
                 "animation": call.message.answer_animation,
                 "document":  call.message.answer_document,
             }.get(media_type)
-            if send:
+            if send_fn:
                 if media_type == "sticker":
-                    await send(media_file_id, reply_markup=reply_markup)
+                    await send_fn(media_file_id, reply_markup=reply_markup)
                 else:
-                    await send(media_file_id, caption=text, parse_mode="HTML", reply_markup=reply_markup)
+                    await send_fn(media_file_id, caption=text, parse_mode="HTML",
+                                  reply_markup=reply_markup)
                 await call.answer("👀 Предпросмотр отправлен")
                 return
 
