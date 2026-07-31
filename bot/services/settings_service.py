@@ -41,6 +41,13 @@ async def get_settings(session: AsyncSession, chat_id: int) -> dict:
 async def update_settings(session: AsyncSession, chat_id: int, section: str, values: dict[str, Any]) -> dict:
     row = await session.get(ChatSettings, chat_id)
     if row is None:
+        # Убедимся что родительская запись Chat существует перед вставкой ChatSettings.
+        # Если Chat отсутствует — создаём заглушку, чтобы не нарушить FK-ограничение.
+        chat = await session.get(Chat, chat_id)
+        if chat is None:
+            chat = Chat(id=chat_id, title="", type="supergroup")
+            session.add(chat)
+            await session.flush()  # записываем Chat до вставки ChatSettings
         row = ChatSettings(chat_id=chat_id, data={})
         session.add(row)
 
