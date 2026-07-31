@@ -32,8 +32,8 @@ async def set_alphabet(message: Message, command: CommandObject) -> None:
 
 
 @router.message(F.text, ~F.text.startswith("/"))
-async def enforce_alphabet(message: Message, chat_settings: dict, chat_user_role: str = "member") -> None:
-    cfg = chat_settings.get("alphabets", {})
+async def enforce_alphabet(message: Message, chat_settings: dict | None = None, chat_user_role: str = "member") -> None:
+    cfg = (chat_settings or {}).get("alphabets", {})
     if not cfg.get("enabled") or chat_user_role in ("admin", "owner", "developer"):
         return
     letters = [c for c in (message.text or "") if unicodedata.category(c).startswith("L")]
