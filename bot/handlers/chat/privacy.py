@@ -42,8 +42,9 @@ async def forget_me_everywhere(message) -> None:
 
 
 @router.message(Command("privacymode"), HasRole("admin"))
-async def toggle_privacy_mode(message, chat_settings: dict) -> None:
-    new_state = not chat_settings.get("privacy", {}).get("user_privacy_mode", True)
+async def toggle_privacy_mode(message, chat_settings: dict | None = None) -> None:
+    cfg = chat_settings or {}
+    new_state = not cfg.get("privacy", {}).get("user_privacy_mode", True)
     async with SessionFactory() as session:
         await update_settings(session, message.chat.id, "privacy", {"user_privacy_mode": new_state})
     await message.answer(
