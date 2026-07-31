@@ -16,16 +16,18 @@ router = Router(name="masked_users")
 
 
 @router.message(Command("maskedlinks"), HasRole("admin"))
-async def toggle_masked(message: Message, chat_settings: dict) -> None:
-    new_state = not chat_settings.get("blocks", {}).get("masked_links", False)
+async def toggle_masked(message: Message, chat_settings: dict | None = None) -> None:
+    cfg = chat_settings or {}
+    new_state = not cfg.get("blocks", {}).get("masked_links", False)
     async with SessionFactory() as session:
         await update_settings(session, message.chat.id, "blocks", {"masked_links": new_state})
     await message.answer(f"Фильтр замаскированных ссылок: {'включён' if new_state else 'выключен'}")
 
 
 @router.message(F.entities, ~F.text.startswith("/"))
-async def detect_masked_links(message: Message, chat_settings: dict, chat_user_role: str = "member") -> None:
-    if not chat_settings.get("blocks", {}).get("masked_links") or chat_user_role in ("admin", "owner", "developer"):
+async def detect_masked_links(message: Message, chat_settings: dict | None = None, chat_user_role: str = "member") -> None:
+    cfg = chat_settings or {}
+    if not cfg.get("blocks", {}).get("masked_links") or chat_user_role in ("admin", "owner", "developer"):
         return
     for entity in message.entities or []:
         if entity.type == "text_link" and entity.url:
