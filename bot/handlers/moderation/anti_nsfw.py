@@ -16,8 +16,9 @@ router = Router(name="anti_nsfw")
 
 
 @router.message(Command("antinsfw"), HasRole("admin"))
-async def toggle_nsfw(message: Message, chat_settings: dict) -> None:
-    new_state = not chat_settings.get("anti_nsfw", {}).get("enabled", False)
+async def toggle_nsfw(message: Message, chat_settings: dict | None = None) -> None:
+    cfg = chat_settings or {}
+    new_state = not cfg.get("anti_nsfw", {}).get("enabled", False)
     async with SessionFactory() as session:
         await update_settings(session, message.chat.id, "anti_nsfw", {"enabled": new_state})
     await message.answer(
@@ -27,8 +28,8 @@ async def toggle_nsfw(message: Message, chat_settings: dict) -> None:
 
 
 @router.message(F.photo)
-async def scan_photo_stub(message: Message, chat_settings: dict) -> None:
-    if not chat_settings.get("anti_nsfw", {}).get("enabled"):
+async def scan_photo_stub(message: Message, chat_settings: dict | None = None) -> None:
+    if not (chat_settings or {}).get("anti_nsfw", {}).get("enabled"):
         return
     # TODO: скачать message.photo[-1].file_id через bot.get_file и отправить
     # в выбранный NSFW-классификатор (см. docstring модуля), удалить при положительном срабатывании.
