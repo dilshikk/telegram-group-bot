@@ -14,10 +14,11 @@ router = Router(name="warns")
 
 
 @router.message(Command("warn"), HasRole("admin"))
-async def cmd_warn(message, command: CommandObject, chat_settings: dict) -> None:
+async def cmd_warn(message, command: CommandObject, chat_settings: dict | None = None) -> None:
     if not message.reply_to_message:
         await message.answer("Ответьте на сообщение пользователя: /warn [причина]")
         return
+    cfg = chat_settings or {}
     target = message.reply_to_message.from_user
     await apply_sanction(message.bot, message.chat.id, target.id, "warn", command.args or "", message.from_user.id)
 
@@ -27,15 +28,15 @@ async def cmd_warn(message, command: CommandObject, chat_settings: dict) -> None
         )).scalar_one_or_none()
         warns_count = cu.warns if cu else 1
 
-    cfg = chat_settings.get("warns", {})
-    max_warns = cfg.get("max_warns", 3)
+    max_warns = cfg.get("warns", {}).get("max_warns", 3)
     await message.answer(t("ru", "user_warned", mention=target.mention_html(), count=warns_count, max=max_warns),
                           parse_mode="HTML")
 
     if warns_count >= max_warns:
-        await apply_sanction(message.bot, message.chat.id, target.id, cfg.get("action", "ban"),
+        action = cfg.get("warns", {}).get("action", "ban")
+        await apply_sanction(message.bot, message.chat.id, target.id, action,
                               "Достигнут лимит предупреждений", 0)
-        await message.answer(f"\U0001f6ab Лимит предупреждений исчерпан \u2014 применено действие «{cfg.get('action', 'ban')}».")
+        await message.answer(f"\U0001f6ab Лимит предупреждений исчерпан \u2014 применено действие «{action}».")
 
 
 @router.message(Command("unwarn"), HasRole("admin"))
