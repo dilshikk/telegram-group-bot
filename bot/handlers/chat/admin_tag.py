@@ -9,8 +9,9 @@ router = Router(name="admin_tag")
 
 
 @router.message(Command("admin"))
-async def call_admin(message, chat_settings: dict) -> None:
-    cooldown = chat_settings.get("tag_admin", {}).get("cooldown_sec", 300)
+async def call_admin(message, chat_settings: dict | None = None) -> None:
+    cfg = chat_settings or {}
+    cooldown = cfg.get("tag_admin", {}).get("cooldown_sec", 300)
     key = f"admincall:{message.chat.id}"
     if await redis.exists(key):
         await message.answer("\u23f3 Вызов админов уже был недавно, подождите.")
