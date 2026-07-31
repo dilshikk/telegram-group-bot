@@ -160,6 +160,52 @@ def _groups_list_keyboard(chats: list) -> InlineKeyboardMarkup:
 
 
 # ---------------------------------------------------------------------------
+# FSM chat_id recovery helper
+# ---------------------------------------------------------------------------
+
+# Sentinel: returned when the caller should immediately return (group selector shown)
+_CHAT_ID_SELECTOR_SHOWN = -1
+
+
+async def _get_pm_chat_id(call: CallbackQuery, state: FSMContext) -> int:
+    """
+    Возвращает current_chat_id для коллбэков в личном чате.
+
+    Логика (в порядке приоритета):
+    1. FSM data — самый быстрый путь (установлен через /settings или sp:select_chat)
+    2. Авто-восстановление из БД — когда меню открыто через /reload или /settings
+       из группы (bot.send_message не устанавливает FSM).
+       - Если у пользователя ровно 1 группа — подставляем автоматически и сохраняем в FSM
+       - Если несколько — показываем выбор групп (возвращаем _CHAT_ID_SELECTOR_SHOWN)
+    3. Возвращаем 0 — групп нет, caller должен показать ошибку
+    """
+    data = await state.get_data()
+    chat_id: int = data.get("current_chat_id", 0)
+    if chat_id:
+        return chat_id
+
+    # Авто-восстановление: ищем группы пользователя в БД
+    async with SessionFactory() as session:
+        chats = await get_admin_chats(session, call.from_user.id)
+
+    if len(chats) == 1:
+        chat_id = chats[0].id
+        await state.update_data(current_chat_id=chat_id)
+        return chat_id
+
+    if len(chats) > 1:
+        await call.message.edit_text(
+            "⚙️ <b>Выберите группу для настройки:</b>",
+            parse_mode="HTML",
+            reply_markup=_groups_list_keyboard(chats),
+        )
+        await call.answer()
+        return _CHAT_ID_SELECTOR_SHOWN
+
+    return 0  # нет групп
+
+
+# ---------------------------------------------------------------------------
 # Goodbye module — Screen 1 helpers (used both here and in goodbye.py)
 # ---------------------------------------------------------------------------
 
@@ -318,7 +364,6 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
         )
 
     elif module == "goodbye":
-        # Screen 1: delegate to shared helpers
         text = _goodbye_main_text(cfg)
         kb   = _goodbye_main_keyboard(chat_id, cfg)
 
@@ -682,8 +727,6 @@ async def cmd_settings(message: Message, state: FSMContext, chat_user_role: str 
 
         if len(chats) == 1:
             chat = chats[0]
-            # FIX: сохраняем chat_id в FSM — без этого все настройки из личного чата
-            # летят в chat_id=0 и никогда не сохраняются в правильную запись БД
             await state.update_data(current_chat_id=chat.id)
             await message.answer(
                 _main_text(chat.title or str(chat.id)),
@@ -703,7 +746,6 @@ async def cmd_settings(message: Message, state: FSMContext, chat_user_role: str 
         return
 
     title = message.chat.title or str(message.chat.id)
-    # FIX: в групповом чате тоже сохраняем current_chat_id — для единообразия
     await state.update_data(current_chat_id=message.chat.id)
     await message.answer(
         _main_text(title),
@@ -731,7 +773,6 @@ async def cb_select_chat(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer("Группа не найдена.", show_alert=True)
         return
 
-    # Сохраняем chat_id в FSM data — используется в sp:m:goodbye / sp:gb:*
     await state.update_data(current_chat_id=chat_id)
 
     await call.message.edit_text(
@@ -743,9 +784,16 @@ async def cb_select_chat(call: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.callback_query(F.data.startswith("sp:main:"))
-async def cb_main(call: CallbackQuery) -> None:
+async def cb_main(call: CallbackQuery, state: FSMContext) -> None:
     page = int(call.data.split(":")[2])
     if call.message.chat.type == "private":
+        # Авто-восстановление chat_id при навигации по страницам
+        data = await state.get_data()
+        if not data.get("current_chat_id"):
+            chat_id = await _get_pm_chat_id(call, state)
+            if chat_id <= 0:
+                return
+
         title = ""
         if call.message.html_text:
             m = re.search(r"<code>(.*?)</code>", call.message.html_text)
@@ -781,19 +829,15 @@ async def cb_module(call: CallbackQuery, state: FSMContext, chat_settings: dict 
     module = call.data.split(":")[2]
 
     if call.message.chat.type == "private":
-        data = await state.get_data()
-        inferred_chat_id: int = data.get("current_chat_id", 0)
-        if inferred_chat_id:
-            async with SessionFactory() as session:
-                all_cfg = await get_settings(session, inferred_chat_id)
-            cfg: dict = all_cfg.get(module, {})
-        else:
-            # FIX: нет chat_id — сообщаем пользователю вместо молчаливого отказа
-            await call.answer(
-                "❌ Сессия истекла. Отправьте /settings заново.",
-                show_alert=True,
-            )
+        inferred_chat_id = await _get_pm_chat_id(call, state)
+        if inferred_chat_id == _CHAT_ID_SELECTOR_SHOWN:
+            return  # уже показали выбор группы
+        if inferred_chat_id == 0:
+            await call.answer("😟 Группы не найдены. Отправьте /reload в группе.", show_alert=True)
             return
+        async with SessionFactory() as session:
+            all_cfg = await get_settings(session, inferred_chat_id)
+        cfg: dict = all_cfg.get(module, {})
     else:
         cfg = (chat_settings or {}).get(module, {})
         inferred_chat_id = call.message.chat.id
@@ -829,7 +873,6 @@ async def cb_set_goodbye(call: CallbackQuery, state: FSMContext) -> None:
     chat_id передаётся явно, чтобы корректно работать из личного чата.
     """
     parts = call.data.split(":")
-    # ["sp", "set", "goodbye", field, value, chat_id]
     if len(parts) < 6:
         await call.answer("Ошибка callback data.", show_alert=True)
         return
@@ -838,16 +881,17 @@ async def cb_set_goodbye(call: CallbackQuery, state: FSMContext) -> None:
     raw     = parts[4]
     chat_id = int(parts[5])
 
-    # FIX: защита от chat_id=0 — значит кнопка была сформирована без FSM-данных
+    # Если chat_id=0 — авто-восстановление из FSM/БД
     if chat_id == 0:
-        # Попробуем достать chat_id из FSM как fallback
-        data = await state.get_data()
-        chat_id = data.get("current_chat_id", 0)
+        if call.message.chat.type == "private":
+            chat_id = await _get_pm_chat_id(call, state)
+            if chat_id == _CHAT_ID_SELECTOR_SHOWN:
+                return
+        else:
+            chat_id = call.message.chat.id
+
     if chat_id == 0:
-        await call.answer(
-            "❌ Не удалось определить группу. Отправьте /settings заново.",
-            show_alert=True,
-        )
+        await call.answer("😟 Группы не найдены. Отправьте /reload в группе.", show_alert=True)
         return
 
     value: bool | int | str
@@ -892,15 +936,12 @@ async def cb_set(call: CallbackQuery, state: FSMContext, chat_settings: dict | N
     else:
         value = raw
 
-    # FIX: в личном чате берём chat_id из FSM, а не из call.message.chat.id (который = user_id в ЛС)
     if call.message.chat.type == "private":
-        data = await state.get_data()
-        chat_id: int = data.get("current_chat_id", 0)
+        chat_id = await _get_pm_chat_id(call, state)
+        if chat_id == _CHAT_ID_SELECTOR_SHOWN:
+            return
         if chat_id == 0:
-            await call.answer(
-                "❌ Не удалось определить группу. Отправьте /settings заново.",
-                show_alert=True,
-            )
+            await call.answer("😟 Группы не найдены. Отправьте /reload в группе.", show_alert=True)
             return
     else:
         chat_id = call.message.chat.id
