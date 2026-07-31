@@ -2,6 +2,8 @@
 Панель настроек /settings — inline-клавиатура для управления модулями чата.
 Основана на интерфейсе эталонного бота (скриншоты).
 """
+import re
+
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -43,19 +45,19 @@ def _on(val: bool) -> str:
 
 def _action_label(action: str) -> str:
     labels = {
-        "warn":    "⚠ Предупреждение",
-        "mute":    "🔇 Заглушить",
-        "kick":    "👢 Кикнуть",
-        "ban":     "🚫 Заблокировать",
-        "restrict":"🚷 Ограничить",
-        "delete":  "🗑 Удалить",
-        "off":     "❌ Выкл",
+        "warn":     "⚠ Предупреждение",
+        "mute":     "🔇 Заглушить",
+        "kick":     "👢 Кикнуть",
+        "ban":      "🚫 Заблокировать",
+        "restrict": "🚷 Ограничить",
+        "delete":   "🗑 Удалить",
+        "off":      "❌ Выкл",
     }
     return labels.get(action, action)
 
 
 # ---------------------------------------------------------------------------
-# Main menu layout
+# Main settings menu layout
 # ---------------------------------------------------------------------------
 
 _PAGE0_PAIRS: list[tuple[str, str]] = [
@@ -116,7 +118,7 @@ def _main_keyboard(page: int) -> InlineKeyboardMarkup:
             _btn("▶ Другие", "sp:main:1"),
         ])
     else:
-        idx = page - 1
+        idx   = page - 1
         start = idx * _PAGE1_SIZE * 2
         chunk = _PAGE1_ROWS[start: start + _PAGE1_SIZE * 2]
         for i in range(0, len(chunk), 2):
@@ -135,7 +137,7 @@ def _main_keyboard(page: int) -> InlineKeyboardMarkup:
 
 def _main_text(chat_title: str) -> str:
     return (
-        f"⚙️ <b>ПАРАМЕТРЫ</b>\n"
+        "⚙️ <b>ПАРАМЕТРЫ</b>\n"
         f"Группа: <code>{chat_title}</code>\n\n"
         "<i>Выберите один из параметров, который вы хотите изменить.</i>"
     )
@@ -158,25 +160,36 @@ def _groups_list_keyboard(chats: list) -> InlineKeyboardMarkup:
 
 
 # ---------------------------------------------------------------------------
-# Goodbye module — screen 1: main view
+# Goodbye module — Screen 1 helpers (used both here and in goodbye.py)
 # ---------------------------------------------------------------------------
 
 def _goodbye_main_text(cfg: dict) -> str:
-    enabled = cfg.get("enabled", False)
-    send_pm = cfg.get("send_to_pm", False)
+    """Текст экрана 1 модуля «Прощание»."""
+    enabled  = cfg.get("enabled", False)
+    send_pm  = cfg.get("send_to_pm", False)
+
+    if send_pm:
+        delivery_note = (
+            "\n⚠️ Сообщение будет отправлено только пользователям, "
+            "которые запустили бота в приватном чате."
+        )
+    else:
+        delivery_note = "\nСообщение отправляется в группу."
+
     return (
         "👋 <b>Прощание</b>\n"
         "В этом меню вы можете установить прощальное сообщение, "
-        "которое будет отправлено, когда кто-то покинет группу.\n\n"
-        "⚠️ Сообщение будет отправлено только пользователям, "
-        "которые запустили бота в приватном чате.\n\n"
+        "которое будет отправлено, когда кто-то покинет группу."
+        f"{delivery_note}\n\n"
         f"Статус: {_on(enabled)}"
     )
 
 
 def _goodbye_main_keyboard(chat_id: int, cfg: dict) -> InlineKeyboardMarkup:
-    enabled = cfg.get("enabled", False)
-    send_pm = cfg.get("send_to_pm", False)
+    """Клавиатура экрана 1 модуля «Прощание»."""
+    enabled   = cfg.get("enabled", False)
+    send_pm   = cfg.get("send_to_pm", False)
+    del_last  = cfg.get("delete_last", False)
 
     if enabled:
         toggle_row = [
@@ -189,12 +202,16 @@ def _goodbye_main_keyboard(chat_id: int, cfg: dict) -> InlineKeyboardMarkup:
             _btn("✔ Включить",  f"sp:set:goodbye:enabled:1:{chat_id}"),
         ]
 
-    send_pm_label = f"💌 Отправить в приватный чат {'✓' if send_pm else ''}"
+    pm_mark  = " ✓" if send_pm  else ""
+    del_mark = " ✓" if del_last else ""
 
     return InlineKeyboardMarkup(inline_keyboard=[
         toggle_row,
         [_btn("✏️ Настроить сообщение", f"sp:gb:configure:{chat_id}")],
-        [_btn(send_pm_label, f"sp:set:goodbye:send_to_pm:{int(not send_pm)}:{chat_id}")],
+        [_btn(f"💌 Отправить в приватный чат{pm_mark}",
+              f"sp:set:goodbye:send_to_pm:{int(not send_pm)}:{chat_id}")],
+        [_btn(f"🗑 Удалять последнее сообщение{del_mark}",
+              f"sp:set:goodbye:delete_last:{int(not del_last)}:{chat_id}")],
         [_btn("◀ Назад", "sp:main:0")],
     ])
 
@@ -221,7 +238,7 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
 
     if module == "antispam":
         enabled = cfg.get("enabled", False)
-        action = cfg.get("action", "warn")
+        action  = cfg.get("action", "warn")
         text = (
             "🚫 <b>Антиспам</b>\n"
             "Этот модуль позволяет вам контролировать спам-сообщения в вашей группе.\n\n"
@@ -232,9 +249,9 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
 
     elif module == "antiflood":
         enabled = cfg.get("enabled", False)
-        action = cfg.get("action", "mute")
-        count = cfg.get("count", 5)
-        period = cfg.get("period", 5)
+        action  = cfg.get("action", "mute")
+        count   = cfg.get("count", 5)
+        period  = cfg.get("period", 5)
         text = (
             "💨 <b>Антифлуд</b>\n"
             "Этот модуль позволяет вам контролировать флуд-сообщения.\n\n"
@@ -247,8 +264,8 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
 
     elif module == "anti_nsfw":
         enabled = cfg.get("enabled", False)
-        delete = cfg.get("delete", True)
-        action = cfg.get("action", "warn")
+        delete  = cfg.get("delete", True)
+        action  = cfg.get("action", "warn")
         text = (
             "🔞 <b>Фильтр порно</b>\n"
             "Этот модуль автоматически обнаруживает и удаляет сообщения с непристойным содержимым.\n\n"
@@ -258,14 +275,15 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
         )
         kb = _kb(
             _toggle_btn("enabled", enabled),
-            [_btn("🗑 Удалять сообщения " + ("✅" if delete else "❌"), f"sp:set:{module}:delete:{int(not delete)}")],
+            [_btn("🗑 Удалять сообщения " + ("✅" if delete else "❌"),
+                  f"sp:set:{module}:delete:{int(not delete)}")],
             _action_row(action, ["off", "warn", "mute", "kick", "ban"]),
             nav,
         )
 
     elif module == "captcha":
         enabled = cfg.get("enabled", False)
-        ctype = cfg.get("type", "button")
+        ctype   = cfg.get("type", "button")
         text = (
             "🧠 <b>Капча</b>\n"
             "Защита группы от ботов. Новый участник должен пройти проверку.\n\n"
@@ -275,15 +293,15 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
         kb = _kb(
             _toggle_btn("enabled", enabled),
             [
-                _btn("🔘 Кнопка" + (" ✓" if ctype == "button" else ""), f"sp:set:{module}:type:button"),
-                _btn("🔢 Математика" + (" ✓" if ctype == "math" else ""), f"sp:set:{module}:type:math"),
+                _btn("🔘 Кнопка"    + (" ✓" if ctype == "button" else ""), f"sp:set:{module}:type:button"),
+                _btn("🔢 Математика" + (" ✓" if ctype == "math"   else ""), f"sp:set:{module}:type:math"),
             ],
             [_btn("🔠 Текст" + (" ✓" if ctype == "text" else ""), f"sp:set:{module}:type:text")],
             nav,
         )
 
     elif module == "welcome":
-        enabled = cfg.get("enabled", False)
+        enabled     = cfg.get("enabled", False)
         delete_prev = cfg.get("delete_previous", False)
         text = (
             "👋 <b>Приветствие</b>\n"
@@ -293,13 +311,14 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
         )
         kb = _kb(
             _toggle_btn("enabled", enabled),
-            [_btn("🗑 Удалять предыдущее " + ("✅" if delete_prev else "❌"), f"sp:set:{module}:delete_previous:{int(not delete_prev)}")],
+            [_btn("🗑 Удалять предыдущее " + ("✅" if delete_prev else "❌"),
+                  f"sp:set:{module}:delete_previous:{int(not delete_prev)}")],
             [_btn("✏️ Изменить текст", "sp:info:welcome_text")],
             nav,
         )
 
     elif module == "goodbye":
-        # Screen 1: main goodbye menu
+        # Screen 1: delegate to shared helpers
         text = _goodbye_main_text(cfg)
         kb   = _goodbye_main_keyboard(chat_id, cfg)
 
@@ -314,7 +333,7 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
 
     elif module == "warns":
         max_warns = cfg.get("max_warns", 3)
-        action = cfg.get("action", "ban")
+        action    = cfg.get("action", "ban")
         text = (
             "⚠️ <b>Предупреждения</b>\n"
             "Настройте систему предупреждений для нарушителей.\n\n"
@@ -333,8 +352,8 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
 
     elif module == "night_mode":
         enabled = cfg.get("enabled", False)
-        start = cfg.get("start", "23:00")
-        end = cfg.get("end", "07:00")
+        start   = cfg.get("start", "23:00")
+        end     = cfg.get("end",   "07:00")
         text = (
             "🌙 <b>Ночной режим</b>\n"
             "В ночное время группа будет ограничена (только чтение).\n\n"
@@ -346,9 +365,9 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
         kb = _kb(_toggle_btn("enabled", enabled), nav)
 
     elif module == "max_message_length":
-        delete = cfg.get("delete", False)
+        delete  = cfg.get("delete", False)
         max_len = cfg.get("limit", 2000)
-        action = cfg.get("action", "off")
+        action  = cfg.get("action", "off")
         text = (
             "📏 <b>Длина сообщения</b>\n"
             "В этом меню вы можете установить минимальную/максимальную длину символов для сообщений, "
@@ -359,15 +378,16 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
         )
         kb = _kb(
             [
-                _btn("❌ Выкл" + (" ✓" if action == "off" else ""),           f"sp:set:{module}:action:off"),
-                _btn("⚠ Предупреждение" + (" ✓" if action == "warn" else ""), f"sp:set:{module}:action:warn"),
-                _btn("👢 Исключить" + (" ✓" if action == "kick" else ""),     f"sp:set:{module}:action:kick"),
+                _btn("❌ Выкл"           + (" ✓" if action == "off"      else ""), f"sp:set:{module}:action:off"),
+                _btn("⚠ Предупреждение" + (" ✓" if action == "warn"     else ""), f"sp:set:{module}:action:warn"),
+                _btn("👢 Исключить"      + (" ✓" if action == "kick"     else ""), f"sp:set:{module}:action:kick"),
             ],
             [
-                _btn("🚷 Ограничить" + (" ✓" if action == "restrict" else ""), f"sp:set:{module}:action:restrict"),
-                _btn("🚫 Заблокировать" + (" ✓" if action == "ban" else ""),   f"sp:set:{module}:action:ban"),
+                _btn("🚷 Ограничить"     + (" ✓" if action == "restrict" else ""), f"sp:set:{module}:action:restrict"),
+                _btn("🚫 Заблокировать"  + (" ✓" if action == "ban"      else ""), f"sp:set:{module}:action:ban"),
             ],
-            [_btn("🗑 Удалять сообщения " + ("✅" if delete else "❌"), f"sp:set:{module}:delete:{int(not delete)}")],
+            [_btn("🗑 Удалять сообщения " + ("✅" if delete else "❌"),
+                  f"sp:set:{module}:delete:{int(not delete)}")],
             [_btn("📏 Минимальная длина", "sp:info:min_length")],
             [_btn("📏 Максимальная длина", "sp:info:max_length")],
             nav,
@@ -375,8 +395,8 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
 
     elif module == "link_settings":
         enabled = cfg.get("enabled", False)
-        delete = cfg.get("delete", True)
-        action = cfg.get("action", "warn")
+        delete  = cfg.get("delete", True)
+        action  = cfg.get("action", "warn")
         text = (
             "🔗 <b>Ссылка группы</b>\n"
             "Блокировка ссылок от обычных пользователей.\n\n"
@@ -386,15 +406,16 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
         )
         kb = _kb(
             _toggle_btn("enabled", enabled),
-            [_btn("🗑 Удалять сообщения " + ("✅" if delete else "❌"), f"sp:set:{module}:delete:{int(not delete)}")],
+            [_btn("🗑 Удалять сообщения " + ("✅" if delete else "❌"),
+                  f"sp:set:{module}:delete:{int(not delete)}")],
             _action_row(action, ["off", "warn", "mute", "kick", "ban"]),
             nav,
         )
 
     elif module == "banned_words":
         enabled = cfg.get("enabled", False)
-        delete = cfg.get("delete", True)
-        action = cfg.get("action", "warn")
+        delete  = cfg.get("delete", True)
+        action  = cfg.get("action", "warn")
         text = (
             "abc <b>Запрещённые слова</b>\n"
             "Автоматическая фильтрация запрещённых слов и фраз.\n\n"
@@ -405,23 +426,26 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
         )
         kb = _kb(
             _toggle_btn("enabled", enabled),
-            [_btn("🗑 Удалять сообщения " + ("✅" if delete else "❌"), f"sp:set:{module}:delete:{int(not delete)}")],
+            [_btn("🗑 Удалять сообщения " + ("✅" if delete else "❌"),
+                  f"sp:set:{module}:delete:{int(not delete)}")],
             _action_row(action, ["off", "warn", "mute", "kick", "ban"]),
             nav,
         )
 
     elif module == "message_deletion":
-        del_service = cfg.get("delete_service_messages", True)
+        del_service  = cfg.get("delete_service_messages", True)
         del_commands = cfg.get("delete_commands", False)
         text = (
             "🗑 <b>Удаление сообщений</b>\n"
             "Настройте автоматическое удаление служебных сообщений и команд.\n\n"
-            f"Удалять служебные: {'✅' if del_service else '❌'}\n"
-            f"Удалять команды: {'✅' if del_commands else '❌'}"
+            f"Удалять служебные: {'✅' if del_service  else '❌'}\n"
+            f"Удалять команды:   {'✅' if del_commands else '❌'}"
         )
         kb = _kb(
-            [_btn("🗑 Служебные " + ("✅" if del_service else "❌"), f"sp:set:{module}:delete_service_messages:{int(not del_service)}")],
-            [_btn("🗑 Команды " + ("✅" if del_commands else "❌"), f"sp:set:{module}:delete_commands:{int(not del_commands)}")],
+            [_btn("🗑 Служебные " + ("✅" if del_service  else "❌"),
+                  f"sp:set:{module}:delete_service_messages:{int(not del_service)}")],
+            [_btn("🗑 Команды "   + ("✅" if del_commands else "❌"),
+                  f"sp:set:{module}:delete_commands:{int(not del_commands)}")],
             nav,
         )
 
@@ -445,40 +469,46 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
 
     elif module == "blocks":
         block_arabic = cfg.get("block_arabic", False)
-        block_rtl = cfg.get("block_rtl", False)
+        block_rtl    = cfg.get("block_rtl",    False)
         text = (
             "🔒 <b>Блокировки</b>\n"
             "Настройте блокировку определённых типов сообщений.\n\n"
             f"Арабский текст: {'✅' if block_arabic else '❌'}\n"
-            f"RTL символы: {'✅' if block_rtl else '❌'}"
+            f"RTL символы:    {'✅' if block_rtl    else '❌'}"
         )
         kb = _kb(
-            [_btn("🔤 Арабский " + ("✅" if block_arabic else "❌"), f"sp:set:{module}:block_arabic:{int(not block_arabic)}")],
-            [_btn("↩ RTL " + ("✅" if block_rtl else "❌"), f"sp:set:{module}:block_rtl:{int(not block_rtl)}")],
+            [_btn("🔤 Арабский " + ("✅" if block_arabic else "❌"),
+                  f"sp:set:{module}:block_arabic:{int(not block_arabic)}")],
+            [_btn("↩ RTL "       + ("✅" if block_rtl    else "❌"),
+                  f"sp:set:{module}:block_rtl:{int(not block_rtl)}")],
             nav,
         )
 
     elif module == "media_blocks":
-        block_stickers = cfg.get("block_stickers", False)
-        block_gifs = cfg.get("block_gifs", False)
-        block_voice = cfg.get("block_voice", False)
-        block_video = cfg.get("block_video_notes", False)
+        block_stickers = cfg.get("block_stickers",    False)
+        block_gifs     = cfg.get("block_gifs",         False)
+        block_voice    = cfg.get("block_voice",        False)
+        block_video    = cfg.get("block_video_notes",  False)
         text = (
             "📸 <b>Медиа</b>\n"
             "Ограничьте отправку медиафайлов в группе.\n\n"
-            f"Стикеры: {'✅' if block_stickers else '❌'}\n"
-            f"GIF: {'✅' if block_gifs else '❌'}\n"
-            f"Голосовые: {'✅' if block_voice else '❌'}\n"
-            f"Видеосообщения: {'✅' if block_video else '❌'}"
+            f"Стикеры:       {'✅' if block_stickers else '❌'}\n"
+            f"GIF:           {'✅' if block_gifs     else '❌'}\n"
+            f"Голосовые:     {'✅' if block_voice    else '❌'}\n"
+            f"Видеосообщения:{'✅' if block_video    else '❌'}"
         )
         kb = _kb(
             [
-                _btn("🎭 Стикеры " + ("✅" if block_stickers else "❌"), f"sp:set:{module}:block_stickers:{int(not block_stickers)}"),
-                _btn("🎬 GIF " + ("✅" if block_gifs else "❌"), f"sp:set:{module}:block_gifs:{int(not block_gifs)}"),
+                _btn("🎭 Стикеры " + ("✅" if block_stickers else "❌"),
+                     f"sp:set:{module}:block_stickers:{int(not block_stickers)}"),
+                _btn("🎬 GIF "     + ("✅" if block_gifs     else "❌"),
+                     f"sp:set:{module}:block_gifs:{int(not block_gifs)}"),
             ],
             [
-                _btn("🎙 Голос " + ("✅" if block_voice else "❌"), f"sp:set:{module}:block_voice:{int(not block_voice)}"),
-                _btn("📹 Видео " + ("✅" if block_video else "❌"), f"sp:set:{module}:block_video_notes:{int(not block_video)}"),
+                _btn("🎙 Голос " + ("✅" if block_voice else "❌"),
+                     f"sp:set:{module}:block_voice:{int(not block_voice)}"),
+                _btn("📹 Видео " + ("✅" if block_video else "❌"),
+                     f"sp:set:{module}:block_video_notes:{int(not block_video)}"),
             ],
             nav,
         )
@@ -490,12 +520,14 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
             "🔱 <b>Алфавиты</b>\n"
             "Разрешите или запретите сообщения на определённых языках.\n\n"
             f"Английский: {'✅' if allow_en else '❌'}\n"
-            f"Русский: {'✅' if allow_ru else '❌'}"
+            f"Русский:    {'✅' if allow_ru else '❌'}"
         )
         kb = _kb(
             [
-                _btn("🇬🇧 Английский " + ("✅" if allow_en else "❌"), f"sp:set:{module}:allow_english:{int(not allow_en)}"),
-                _btn("🇷🇺 Русский " + ("✅" if allow_ru else "❌"), f"sp:set:{module}:allow_russian:{int(not allow_ru)}"),
+                _btn("🇬🇧 Английский " + ("✅" if allow_en else "❌"),
+                     f"sp:set:{module}:allow_english:{int(not allow_en)}"),
+                _btn("🇷🇺 Русский "    + ("✅" if allow_ru else "❌"),
+                     f"sp:set:{module}:allow_russian:{int(not allow_ru)}"),
             ],
             nav,
         )
@@ -539,10 +571,10 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
             "иметь пользователи и администраторы к некоторым функциям бота."
         )
         kb = _kb(
-            [_btn("🎖 Права на команды",         "sp:info:perm_commands")],
-            [_btn("🤖 Анонимный администратор",  "sp:info:perm_anon")],
-            [_btn("⚙️ Изменение настроек",        "sp:info:perm_settings")],
-            [_btn("🎫 Свои роли",                "sp:info:perm_roles")],
+            [_btn("🎖 Права на команды",        "sp:info:perm_commands")],
+            [_btn("🤖 Анонимный администратор", "sp:info:perm_anon")],
+            [_btn("⚙️ Изменение настроек",       "sp:info:perm_settings")],
+            [_btn("🎫 Свои роли",               "sp:info:perm_roles")],
             nav,
         )
 
@@ -628,13 +660,13 @@ def _make_kb_module(module: str, cfg: dict, chat_id: int = 0) -> tuple[str, Inli
 
     else:
         text = f"⚙️ <b>{module}</b>\n\nНастройки скоро появятся."
-        kb = _kb(nav)
+        kb   = _kb(nav)
 
     return text, kb
 
 
 # ---------------------------------------------------------------------------
-# Handlers
+# Command handlers
 # ---------------------------------------------------------------------------
 
 @router.message(Command("settings"))
@@ -675,6 +707,10 @@ async def cmd_settings(message: Message, chat_user_role: str = "member") -> None
     )
 
 
+# ---------------------------------------------------------------------------
+# Callback handlers
+# ---------------------------------------------------------------------------
+
 @router.callback_query(F.data.startswith("sp:select_chat:"))
 async def cb_select_chat(call: CallbackQuery, state: FSMContext) -> None:
     """Выбор группы из списка в личном чате."""
@@ -690,7 +726,7 @@ async def cb_select_chat(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer("Группа не найдена.", show_alert=True)
         return
 
-    # Сохраняем текущий chat_id в FSM data для использования в sp:m:goodbye и sp:gb:*
+    # Сохраняем chat_id в FSM data — используется в sp:m:goodbye / sp:gb:*
     await state.update_data(current_chat_id=chat_id)
 
     await call.message.edit_text(
@@ -705,7 +741,6 @@ async def cb_select_chat(call: CallbackQuery, state: FSMContext) -> None:
 async def cb_main(call: CallbackQuery) -> None:
     page = int(call.data.split(":")[2])
     if call.message.chat.type == "private":
-        import re
         title = ""
         if call.message.html_text:
             m = re.search(r"<code>(.*?)</code>", call.message.html_text)
@@ -741,10 +776,8 @@ async def cb_module(call: CallbackQuery, state: FSMContext, chat_settings: dict 
     module = call.data.split(":")[2]
 
     if call.message.chat.type == "private":
-        # Получаем chat_id из FSM state (сохранён при sp:select_chat)
         data = await state.get_data()
         inferred_chat_id: int = data.get("current_chat_id", 0)
-        # Загружаем настройки для нужной группы
         if inferred_chat_id:
             async with SessionFactory() as session:
                 all_cfg = await get_settings(session, inferred_chat_id)
@@ -763,7 +796,7 @@ async def cb_module(call: CallbackQuery, state: FSMContext, chat_settings: dict 
 @router.callback_query(F.data.startswith("sp:info:"))
 async def cb_info(call: CallbackQuery) -> None:
     info_key = call.data.split(":")[2]
-    messages = {
+    info_map = {
         "welcome_text":    "Используйте /setwelcome &lt;текст&gt; для установки текста приветствия.",
         "goodbye_text":    "Используйте /setgoodbye &lt;текст&gt; для установки текста прощания.",
         "min_length":      "Используйте /setminlength &lt;число&gt; для установки минимальной длины.",
@@ -775,24 +808,24 @@ async def cb_info(call: CallbackQuery) -> None:
         "perm_settings":   "Выберите кто может изменять настройки: только владелец или все администраторы.",
         "perm_roles":      "Создайте свои роли с кастомными правами командой /addrole.",
     }
-    msg = messages.get(info_key, "ℹ️ Информация скоро появится.")
-    await call.answer(msg, show_alert=True)
+    await call.answer(info_map.get(info_key, "ℹ️ Информация скоро появится."), show_alert=True)
 
 
 @router.callback_query(F.data.startswith("sp:set:goodbye:"))
-async def cb_set_goodbye(call: CallbackQuery, state: FSMContext, chat_settings: dict | None = None) -> None:
+async def cb_set_goodbye(call: CallbackQuery) -> None:
     """
-    Специальный обработчик для goodbye — формат: sp:set:goodbye:<field>:<value>:<chat_id>
-    chat_id передаётся явно в callback_data, чтобы корректно работать в личке.
+    Setter для модуля goodbye.
+    Формат callback_data: sp:set:goodbye:<field>:<value>:<chat_id>
+    chat_id передаётся явно, чтобы корректно работать из личного чата.
     """
     parts = call.data.split(":")
-    # parts: ["sp", "set", "goodbye", field, value, chat_id]
+    # ["sp", "set", "goodbye", field, value, chat_id]
     if len(parts) < 6:
-        await call.answer("Ошибка callback data", show_alert=True)
+        await call.answer("Ошибка callback data.", show_alert=True)
         return
 
-    field = parts[3]
-    raw   = parts[4]
+    field   = parts[3]
+    raw     = parts[4]
     chat_id = int(parts[5])
 
     value: bool | int | str
@@ -806,11 +839,9 @@ async def cb_set_goodbye(call: CallbackQuery, state: FSMContext, chat_settings: 
     async with SessionFactory() as session:
         await update_settings(session, chat_id, "goodbye", {field: value})
 
-    # Перечитываем настройки и рендерим экран 1
     async with SessionFactory() as session:
         all_cfg = await get_settings(session, chat_id)
     cfg = all_cfg.get("goodbye", {})
-    cfg[field] = value
 
     await call.message.edit_text(
         _goodbye_main_text(cfg),
@@ -822,15 +853,14 @@ async def cb_set_goodbye(call: CallbackQuery, state: FSMContext, chat_settings: 
 
 @router.callback_query(F.data.startswith("sp:set:"))
 async def cb_set(call: CallbackQuery, chat_settings: dict | None = None) -> None:
-    """Generic setter for all modules except goodbye (which has its own handler above)."""
-    parts = call.data.split(":")
+    """Generic setter для всех модулей, кроме goodbye (у него свой обработчик выше)."""
+    parts  = call.data.split(":")
     module = parts[2]
-    # Skip goodbye — handled by cb_set_goodbye
     if module == "goodbye":
-        return
+        return  # handled by cb_set_goodbye
 
     field = parts[3]
-    raw = parts[4]
+    raw   = parts[4]
 
     value: str | int | bool
     if raw in ("0", "1"):
